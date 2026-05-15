@@ -45,13 +45,16 @@ class WebhookEvent(models.Model):
         ("subscription.updated", "Subscription Updated"),
     ]
 
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     webhook = models.ForeignKey(
         Webhook, on_delete=models.CASCADE, related_name="events"
     )
     event = models.CharField(max_length=50, choices=EVENT_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         unique_together = ["webhook", "event"]  # no duplicate events per webhook
 
     def __str__(self):
         return f"{self.webhook} → {self.event}"
+    

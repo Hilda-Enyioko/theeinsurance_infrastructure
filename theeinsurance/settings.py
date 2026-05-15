@@ -162,3 +162,5 @@ CORS_ALLOWED_HEADERS = [
     'content-type',
     'x-partner-key',
 ]
+
+AUTH_USER_MODEL = "accounts.CustomUser"
