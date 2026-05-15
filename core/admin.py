@@ -4,7 +4,7 @@ from .models import Partner, Webhook, WebhookEvent
 # Register your models here.
 @admin.register(Partner)
 class PartnerAdmin(admin.ModelAdmin):
-    list_display = ("name", "slug", "is_active", "commission_rate", "created_at")
+    list_display = ("name", "slug", "partner_type", "is_active", "commission_rate", "created_at")
     search_fields = ("name", "slug")
     list_filter = ("is_active",)
 

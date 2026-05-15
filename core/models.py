@@ -4,10 +4,17 @@ import secrets
 
 # Create your models here.
 class Partner(models.Model):
+    # Partner Type Added
+    PARTNER_TYPE_CHOICES = [
+        ("provider", "Insurance Provider"),
+        ("distributor", "Distribution Partner"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)   
     name = models.CharField(max_length=255)
     slug = models.SlugField(unique=True)
     api_key = models.CharField(max_length=64, unique=True, editable=False)
+    partner_type = models.CharField(max_length=20, choices=PARTNER_TYPE_CHOICES)
     is_active = models.BooleanField(default=True)
     commission_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
     created_at = models.DateTimeField(auto_now_add=True)
