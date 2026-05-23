@@ -12,13 +12,17 @@ class InsuranceCategorySerializer(serializers.ModelSerializer):
 # Insurance Plan Serializer
 class InsurancePlanSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source="category.get_name_display", read_only=True)
-    fields = [
+    provider_name = serializers.CharField(source="provider.name", read_only=True)
+    
+    class Meta:
+        model = InsurancePlan
+        fields = [
             "id", "name", "provider", "provider_name",
             "category", "category_name", "coverage_level",
             "coverage_amount", "premium", "duration_months",
             "description", "is_active", "created_at", "updated_at",
         ]
-    read_only_fields = ["id", "provider", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
 
 class InsurancePlanCreateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -40,10 +44,10 @@ class InsurancePlanCreateSerializer(serializers.ModelSerializer):
     
 # Distributor Provider Access Serializer
 class DistributorProviderAccessSerializer(serializers.ModelSerializer):
-    partner_name = serializers.CharField(source="partner.name", read_only=True)
+    distributor_name = serializers.CharField(source="distributor.name", read_only=True)
     provider_name = serializers.CharField(source="provider.name", read_only=True)
 
-class Meta:
+    class Meta:
         model = DistributorProviderAccess
         fields = [
             "id", "distributor", "distributor_name",
