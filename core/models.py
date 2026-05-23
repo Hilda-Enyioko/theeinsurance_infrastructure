@@ -16,7 +16,6 @@ class Partner(models.Model):
     api_key = models.CharField(max_length=64, unique=True, editable=False)
     partner_type = models.CharField(max_length=20, choices=PARTNER_TYPE_CHOICES)
     is_active = models.BooleanField(default=True)
-    commission_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -26,6 +25,22 @@ class Partner(models.Model):
         if not self.api_key:
             self.api_key = secrets.token_urlsafe(32)  # Generate a secure random API key
         super().save(*args, **kwargs)
+
+
+# Add Distribution Partner Profile
+class DistributorProfile(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    partner = models.OneToOneField(
+        Partner,
+        on_delete=models.CASCADE,
+        related_name="distributor_profile",
+        limit_choices_to={"partner_type": "distributor"},
+    )
+    commission_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.partner.name} — {self.commission_rate}%"
 
 class Webhook(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
