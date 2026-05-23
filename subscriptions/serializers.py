@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import PolicySubscription
 from plans.models import InsurancePlan
-from accounts.models import CustomProfile
+from accounts.models import CustomUser
 
 class PolicySubscriptionSerializer(serializers.ModelSerializer):
     plan_name = serializers.CharField(source='plan.name', read_only=True)
