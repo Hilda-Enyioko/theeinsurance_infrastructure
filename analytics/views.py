@@ -1,14 +1,10 @@
-from django.shortcuts import render
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Count, Sum
-from django.utils import timezone
 
 from subscriptions.models import PolicySubscription
-from plans.models import InsurancePlan
 from accounts.models import CustomerProfile
-from core.models import Partner
 
 
 # Base: Resolve partner from authenticated user
