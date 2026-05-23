@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import os
 from pathlib import Path
 from datetime import timedelta
 from decouple import config
@@ -62,7 +63,6 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'core.middleware.RequestLoggingMiddleware',
 ]
 
 ROOT_URLCONF = 'theeinsurance.urls'
@@ -164,3 +164,6 @@ CORS_ALLOWED_HEADERS = [
 ]
 
 AUTH_USER_MODEL = "accounts.CustomUser"
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
