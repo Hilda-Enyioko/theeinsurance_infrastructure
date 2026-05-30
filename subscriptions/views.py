@@ -6,11 +6,12 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
+from decimal import Decimal
 
 from .models import PolicySubscription
 from .serializers import PolicySubscriptionSerializer, PolicySubscriptionCreateSerializer
 from accounts.models import CustomerProfile
-from plans.models import InsurancePlan, DistributorProviderAccess
+from plans.models import DistributorProviderAccess
 from webhooks.views import dispatch_webhook
 
 
@@ -29,15 +30,15 @@ def calculate_financials(plan, distributor):
     Provider payout is what remains.
     """
     premium = plan.premium
-    platform_fee = round(premium * 0.10, 2)
+    platform_fee = round(premium * Decimal("0.10"), 2)
 
-    distributor_commission = 0.00
+    distributor_commission = Decimal("0.00")
     if distributor:
         try:
-            rate = distributor.distributor_profile.commission_rate / 100
+            rate = distributor.distributor_profile.commission_rate / Decimal("100")
             distributor_commission = round(premium * rate, 2)
         except Exception:
-            distributor_commission = 0.00
+            distributor_commission = Decimal("0.00")
 
     provider_payout = round(premium - platform_fee - distributor_commission, 2)
 

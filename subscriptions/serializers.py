@@ -30,7 +30,7 @@ class PolicySubscriptionSerializer(serializers.ModelSerializer):
             "created_at", "updated_at",
         ]
 
-class PolicySubscriptionCreateSerializer(serializers.ModelSerializer):
+class PolicySubscriptionCreateSerializer(serializers.Serializer):
     plan_id = serializers.UUIDField(write_only=True)
     start_date = serializers.DateField()
 
