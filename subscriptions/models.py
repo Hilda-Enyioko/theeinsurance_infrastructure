@@ -10,7 +10,9 @@ class PolicySubscription(models.Model):
         ("active", "Active"),
         ("expired", "Expired"),
         ("cancelled", "Cancelled"),
-        ("pending", "Pending"),
+        ("failed", "Failed"),
+        ("pending_payment", "Pending Payment"),
+        ("pending_document", "Pending Document"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -49,7 +51,7 @@ class PolicySubscription(models.Model):
     status = models.CharField(
         max_length=20, 
         choices=STATUS_CHOICES, 
-        default="pending",
+        default="pending_document",
         db_index=True
     )
 
@@ -71,3 +73,69 @@ class PolicySubscription(models.Model):
 
     def __str__(self):
         return f"{self.customer.user.email} — {self.plan.name} ({self.status})"
+
+
+REQUIRED_DOCUMENTS = {
+    "motor": {
+        "third_party": [
+            "vehicle_license",
+            "proof_of_ownership",
+            "vehicle_registration",
+        ],
+        "third_party_fire_theft": [
+            "vehicle_license",
+            "proof_of_ownership",
+            "vehicle_registration",
+            "theft_declaration",
+        ],
+        "comprehensive": [
+            "vehicle_license",
+            "proof_of_ownership",
+            "vehicle_registration",
+            "inspection_report",
+            "vehicle_photos",
+        ],
+    },
+    "travel": {
+        "standard": [
+            "passport",
+            "flight_tickets",
+            "travel_itinerary",
+        ],
+    },
+}
+
+# Stores plan-specific documents per subscription
+class SubscriptionDocument(models.Model):
+    DOCUMENT_TYPE_CHOICES = [
+        # motor documents
+        ("vehicle_license", "Vehicle License"),
+        ("proof_of_ownership", "Proof of Ownership"),
+        ("vehicle_registration", "Vehicle Registration"),
+        ("inspection_report", "Inspection Report"),
+        ("vehicle_photos", "Vehicle Photographs"),
+        ("theft_declaration", "Theft Declaration"),
+        # travel documents
+        ("passport", "International Passport"),
+        ("flight_tickets", "Flight Tickets"),
+        ("travel_itinerary", "Travel Itinerary"),
+        ("insurance_certificate", "Insurance Certificate"),
+        # shared
+        ("other", "Other"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    subscription = models.ForeignKey(
+        PolicySubscription,
+        on_delete=models.CASCADE,
+        related_name="documents",
+    )
+    document_type = models.CharField(max_length=50, choices=DOCUMENT_TYPE_CHOICES)
+    file = models.FileField(upload_to="subscriptions/documents/")
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ["subscription", "document_type"]
+
+    def __str__(self):
+        return f"{self.subscription} — {self.document_type}"

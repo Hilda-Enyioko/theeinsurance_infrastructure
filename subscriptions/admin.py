@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import PolicySubscription
+from .models import PolicySubscription, SubscriptionDocument
 
 
 @admin.register(PolicySubscription)
@@ -15,3 +15,8 @@ class PolicySubscriptionAdmin(admin.ModelAdmin):
     search_fields = ["customer__user__email", "plan__name", "payment_reference"]
     list_filter = ["status", "payment_verified"]
     ordering = ["-created_at"]
+
+@admin.register(SubscriptionDocument)
+class SubscriptionDocumentAdmin(admin.ModelAdmin):
+    list_display = ["subscription", "document_type", "uploaded_at"]
+    readonly_fields = ["id", "uploaded_at"]

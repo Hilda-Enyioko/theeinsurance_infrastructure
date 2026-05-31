@@ -41,6 +41,22 @@ class InsurancePlanCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         provider = self.context["provider"]
         return InsurancePlan.objects.create(provider=provider, **validated_data)
+
+    def validate(self, attrs):
+        category = attrs.get("category")
+        coverage_level = attrs.get("coverage_level")
+
+        if category.name == "travel":
+            attrs["coverage_level"] = "standard"
+
+        if category.name == "motor":
+            motor_levels = ["third_party", "third_party_fire_theft", "comprehensive"]
+            if coverage_level not in motor_levels:
+                raise serializers.ValidationError({
+                    "coverage_level": "Motor plans must specify third_party, third_party_fire_theft, or comprehensive."
+                })
+
+        return attrs
     
 # Distributor Provider Access Serializer
 class DistributorProviderAccessSerializer(serializers.ModelSerializer):

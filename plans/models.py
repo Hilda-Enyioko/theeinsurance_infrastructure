@@ -30,9 +30,10 @@ class InsuranceCategory(models.Model):
 # ---Insurance Plan---
 class InsurancePlan(models.Model):
     COVERAGE_LEVELS = [
-        ("basic", "Basic"),
-        ("standard", "Standard"),
-        ("premium", "Premium"),
+        ("third_party", "Third Party Only"),
+        ("tp_fire_theft", "Third Party, Fire & Theft"),
+        ("comprehensive", "Comprehensive"),
+        ("standard", "Standard"),  # travel only
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
