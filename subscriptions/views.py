@@ -1,34 +1,31 @@
-from django.shortcuts import render
-
-# Create your views here.
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.utils import timezone
 from dateutil.relativedelta import relativedelta
 from decimal import Decimal
 
-from .models import PolicySubscription
+from .models import PolicySubscription, SubscriptionDocument, REQUIRED_DOCUMENTS
 from .serializers import PolicySubscriptionSerializer, PolicySubscriptionCreateSerializer
 from accounts.models import CustomerProfile
 from plans.models import DistributorProviderAccess
 from webhooks.views import dispatch_webhook
 
 
-# Helpers
+# Helper Functions
 def get_partner_from_user(user):
     if hasattr(user, 'partner_admin_profile'):
         return user.partner_admin_profile.partner
     return None
 
 
+def get_required_documents(plan):
+    """Return required document list for a given plan."""
+    category = plan.category.name
+    coverage_level = plan.coverage_level
+    return REQUIRED_DOCUMENTS.get(category, {}).get(coverage_level, [])
+
+
 def calculate_financials(plan, distributor):
-    """
-    Calculate the revenue split for a subscription.
-    Platform fee is 10% of premium.
-    Distributor commission comes from DistributorProfile.
-    Provider payout is what remains.
-    """
     premium = plan.premium
     platform_fee = round(premium * Decimal("0.10"), 2)
 
@@ -62,7 +59,6 @@ class CustomerSubscriptionListView(APIView):
 
         subscriptions = PolicySubscription.objects.filter(customer=profile)
 
-        # filter by status if provided
         status_filter = request.query_params.get("status")
         if status_filter:
             subscriptions = subscriptions.filter(status=status_filter)
@@ -75,7 +71,6 @@ class CustomerSubscriptionCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        # verify customer profile exists for this partner
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
         except CustomerProfile.DoesNotExist:
@@ -89,7 +84,6 @@ class CustomerSubscriptionCreateView(APIView):
         start_date = serializer.validated_data["start_date"]
         end_date = start_date + relativedelta(months=plan.duration_months)
 
-        # verify distributor has access to this plan's provider
         partner = request.partner
         distributor = None
 
@@ -106,10 +100,8 @@ class CustomerSubscriptionCreateView(APIView):
                 )
             distributor = partner
 
-        # calculate revenue split
         financials = calculate_financials(plan, distributor)
 
-        # create subscription in pending state
         subscription = PolicySubscription.objects.create(
             customer=profile,
             plan=plan,
@@ -117,16 +109,130 @@ class CustomerSubscriptionCreateView(APIView):
             distributor=distributor,
             start_date=start_date,
             end_date=end_date,
-            status="pending",
+            status="pending_document",
             **financials,
         )
 
+        required_docs = get_required_documents(plan)
+
         return Response({
-            "message": "Subscription initiated. Complete payment to activate.",
+            "message": "Subscription initiated. Please upload required documents.",
             "subscription_id": str(subscription.id),
             "amount": str(subscription.amount_paid),
+            "required_documents": required_docs,
         }, status=201)
 
+
+# Document Upload
+
+class SubscriptionDocumentUploadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, subscription_id):
+        try:
+            profile = request.user.customer_profiles.get(partner=request.partner)
+        except CustomerProfile.DoesNotExist:
+            return Response({"error": "Customer profile not found."}, status=404)
+
+        try:
+            subscription = PolicySubscription.objects.get(
+                id=subscription_id,
+                customer=profile,
+                status="pending_document",
+            )
+        except PolicySubscription.DoesNotExist:
+            return Response(
+                {"error": "Subscription not found or not awaiting documents."},
+                status=404
+            )
+
+        document_type = request.data.get("document_type")
+        file = request.FILES.get("file")
+
+        if not document_type:
+            return Response({"error": "document_type is required."}, status=400)
+        if not file:
+            return Response({"error": "file is required."}, status=400)
+
+        # validate document_type is valid for this plan
+        required_docs = get_required_documents(subscription.plan)
+        valid_types = [choice[0] for choice in SubscriptionDocument.DOCUMENT_TYPE_CHOICES]
+
+        if document_type not in valid_types:
+            return Response(
+                {"error": f"Invalid document type. Valid types: {valid_types}"},
+                status=400
+            )
+
+        if document_type not in required_docs:
+            return Response(
+                {"error": f"This document is not required for this plan. Required: {required_docs}"},
+                status=400
+            )
+
+        # create or replace the document
+        SubscriptionDocument.objects.update_or_create(
+            subscription=subscription,
+            document_type=document_type,
+            defaults={"file": file},
+        )
+
+        # check if all required documents are now uploaded
+        uploaded_types = list(
+            subscription.documents.values_list("document_type", flat=True)
+        )
+        missing_docs = [doc for doc in required_docs if doc not in uploaded_types]
+
+        if not missing_docs:
+            subscription.status = "pending_payment"
+            subscription.save()
+            return Response({
+                "message": "All documents uploaded. You can now proceed to payment.",
+                "status": "pending_payment",
+                "missing_documents": [],
+            })
+
+        return Response({
+            "message": f"Document uploaded successfully.",
+            "status": "pending_document",
+            "missing_documents": missing_docs,
+        })
+
+    def get(self, request, subscription_id):
+        """Returns uploaded documents and what is still missing."""
+        try:
+            profile = request.user.customer_profiles.get(partner=request.partner)
+        except CustomerProfile.DoesNotExist:
+            return Response({"error": "Customer profile not found."}, status=404)
+
+        try:
+            subscription = PolicySubscription.objects.get(
+                id=subscription_id, customer=profile
+            )
+        except PolicySubscription.DoesNotExist:
+            return Response({"error": "Subscription not found."}, status=404)
+
+        required_docs = get_required_documents(subscription.plan)
+        uploaded = subscription.documents.all()
+        uploaded_types = [doc.document_type for doc in uploaded]
+        missing_docs = [doc for doc in required_docs if doc not in uploaded_types]
+
+        return Response({
+            "required_documents": required_docs,
+            "uploaded_documents": [
+                {
+                    "document_type": doc.document_type,
+                    "file": doc.file.url if doc.file else None,
+                    "uploaded_at": doc.uploaded_at,
+                }
+                for doc in uploaded
+            ],
+            "missing_documents": missing_docs,
+            "ready_for_payment": len(missing_docs) == 0,
+        })
+
+
+# ─── Subscription Detail ──────────────────────────────────────────────────────
 
 class CustomerSubscriptionDetailView(APIView):
     permission_classes = [IsAuthenticated]
@@ -171,7 +277,6 @@ class CustomerSubscriptionDetailView(APIView):
         subscription.status = "cancelled"
         subscription.save()
 
-        # fire webhook to both provider and distributor
         payload = {
             "subscription_id": str(subscription.id),
             "plan": subscription.plan.name,
@@ -187,12 +292,9 @@ class CustomerSubscriptionDetailView(APIView):
         return Response({"message": "Subscription cancelled successfully."})
 
 
-# Payment Verification
+# ─── Payment Verification ─────────────────────────────────────────────────────
+
 class PaymentVerificationView(APIView):
-    """
-    Called after payment gateway confirms payment.
-    Activates the subscription and fires webhooks.
-    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request, subscription_id):
@@ -203,11 +305,27 @@ class PaymentVerificationView(APIView):
 
         try:
             subscription = PolicySubscription.objects.get(
-                id=subscription_id, customer=profile, status="pending"
+                id=subscription_id, customer=profile
             )
         except PolicySubscription.DoesNotExist:
+            return Response({"error": "Subscription not found."}, status=404)
+
+        # enforce document → payment order
+        if subscription.status == "pending_document":
+            required_docs = get_required_documents(subscription.plan)
+            uploaded_types = list(
+                subscription.documents.values_list("document_type", flat=True)
+            )
+            missing = [doc for doc in required_docs if doc not in uploaded_types]
+            return Response({
+                "error": "Please upload all required documents before proceeding to payment.",
+                "missing_documents": missing,
+            }, status=400)
+
+        if subscription.status != "pending_payment":
             return Response(
-                {"error": "Pending subscription not found."}, status=404
+                {"error": "This subscription is not awaiting payment."},
+                status=400
             )
 
         payment_reference = request.data.get("payment_reference")
@@ -216,13 +334,11 @@ class PaymentVerificationView(APIView):
                 {"error": "Payment reference is required."}, status=400
             )
 
-        # activate subscription
         subscription.payment_reference = payment_reference
         subscription.payment_verified = True
         subscription.status = "active"
         subscription.save()
 
-        # fire webhooks
         payload = {
             "subscription_id": str(subscription.id),
             "plan": subscription.plan.name,
@@ -246,11 +362,6 @@ class PaymentVerificationView(APIView):
 
 # Partner Admin Subscription View
 class PartnerSubscriptionListView(APIView):
-    """
-    Partner admins view all subscriptions relevant to them.
-    Providers see subscriptions for their plans.
-    Distributors see subscriptions facilitated through them.
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
