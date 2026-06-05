@@ -6,6 +6,9 @@ from .views import (
     CustomerKYCView,
     LoginView,
     TokenRefreshView,
+    StaffLoginView,
+    StaffPartnerKYCReviewView,
+    StaffDistributorAccessView,
 )
 
 urlpatterns = [
@@ -20,4 +23,10 @@ urlpatterns = [
     # shared
     path("auth/login/", LoginView.as_view(), name="login"),
     path("auth/token/refresh/", TokenRefreshView.as_view(), name="token-refresh"),
+    
+    # theeinsurance staff
+    path("staff/auth/login/", StaffLoginView.as_view(), name="staff-login"),
+    path("staff/kyc/partners/", StaffPartnerKYCReviewView.as_view(), name="staff-partner-kyc-list"),
+    path("staff/kyc/partners/<uuid:partner_id>/", StaffPartnerKYCReviewView.as_view(), name="staff-partner-kyc-review"),
+    path("staff/distributor-access/", StaffDistributorAccessView.as_view(), name="staff-distributor-access"),
 ]

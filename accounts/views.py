@@ -4,6 +4,10 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from django.contrib.auth import authenticate
+from django.utils import timezone
+from accounts.permissions import IsSuperAdmin
+from .models import PartnerKYC, CustomerKYC
+from core.models import Partner
 
 from .serializers import (
     CustomerRegistrationSerializer,
@@ -186,3 +190,153 @@ class TokenRefreshView(APIView):
             })
         except TokenError as e:
             return Response({"error": str(e)}, status=401)
+
+# TheeInsurance Staff Only Login View
+class StaffLoginView(APIView):
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        serializer = LoginSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+        
+        user = authenticate(
+            request,
+            username=serializer.validated_data['email'],
+            password=serializer.validated_data['password']
+        )
+        
+        if not user:
+            return Response({'error': 'Invalid email or password'}, status=401)
+        
+        if not user.is_active:
+            return Response({'error': 'Account is inactive'}, status=403)
+        
+        if user.role != 'super_admin':
+            return Response(
+                {'error': 'Access restricted to TheeInsurance staff.'}, 
+                status=403
+            )
+        tokens = generate_tokens(user)
+        
+        return Response({
+            "tokens": tokens,
+            "role": user.role,
+            "email": user.email,
+            "first_name": user.first_name,
+        })
+
+class StaffPartnerKYCReviewView(APIView):
+    permission_classes = [IsSuperAdmin]
+    
+    def get(self, request):
+        """List all pending partner KYC submissions."""
+        status_filter = request.query_params.set("status", "pending")
+        kyc_list = PartnerKYC.objects.filter(status=status_filter)
+        data = [
+            {
+                "partner_id": str(k.partner.id),
+                "partner_name": k.partner.name,
+                "partner_type": k.partner.partner_type,
+                "rc_number": k.rc_number,
+                "status": k.status,
+                "submitted_at": k.submitted_at,
+            }
+            for k in kyc_list
+        ]
+        
+        return Response({"kyc_submissions": data})
+    
+    def patch(self, request, partner_id):
+        """Approve or reject a partner KYC"""
+        try:
+            kyc = PartnerKYC.objects.get(partner__id=partner_id)
+        except PartnerKYC.DoesNotExist:
+            return Response(
+                {'error': 'KYC not found'},
+                status=404
+            )
+        
+        action = request.data.get('action')
+        note = request.data.get('note', '')
+        
+        if action not in ['approve', 'reject']:
+            return Response(
+                {'error': "Action must be approve or reject."},
+                status=400
+            )
+        
+        kyc.status = 'approved' if action == 'approve' else 'rejected'
+        kyc.review_note = note
+        kyc.reviewed_by = request.user.email
+        kyc.reviewed_at = timezone.now()
+        
+        # activate partner on approval
+        if action == 'approve':
+            kyc.partner.is_active = True
+            kyc.partner.save()
+        
+        return Response({
+            "message": f"Partner KYC {kyc.status}.",
+            "partner": kyc.partner.name,
+            "is_active": kyc.partner.is_active,
+        })
+
+
+class StaffDistributorAccessView(APIView):
+    """Grant or revoke distributor access to a provider."""
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request):
+        from plans.models import DistributorProviderAccess
+
+        distributor_id = request.data.get("distributor_id")
+        provider_id = request.data.get("provider_id")
+
+        if not distributor_id or not provider_id:
+            return Response(
+                {"error": "distributor_id and provider_id are required."},
+                status=400
+            )
+
+        try:
+            distributor = Partner.objects.get(
+                id=distributor_id, partner_type="distributor"
+            )
+            provider = Partner.objects.get(
+                id=provider_id, partner_type="provider"
+            )
+        except Partner.DoesNotExist:
+            return Response({"error": "Partner not found."}, status=404)
+
+        access, created = DistributorProviderAccess.objects.get_or_create(
+            distributor=distributor,
+            provider=provider,
+            defaults={"is_active": True},
+        )
+
+        if not created:
+            access.is_active = True
+            access.save()
+
+        return Response({
+            "message": f"Access granted: {distributor.name} → {provider.name}",
+            "created": created,
+        }, status=201)
+
+    def delete(self, request):
+        from plans.models import DistributorProviderAccess
+
+        distributor_id = request.data.get("distributor_id")
+        provider_id = request.data.get("provider_id")
+
+        try:
+            access = DistributorProviderAccess.objects.get(
+                distributor__id=distributor_id,
+                provider__id=provider_id,
+            )
+            access.is_active = False
+            access.save()
+            return Response({"message": "Access revoked."})
+        except DistributorProviderAccess.DoesNotExist:
+            return Response({"error": "Access record not found."}, status=404)

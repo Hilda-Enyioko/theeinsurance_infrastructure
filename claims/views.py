@@ -1,6 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from accounts.permissions import IsSuperAdmin, IsProviderAdmin
 
 from .models import Claim, ClaimDocument, REQUIRED_CLAIM_DOCUMENTS
 from .serializers import (
@@ -178,15 +179,10 @@ class ClaimDocumentUploadView(APIView):
 # Provider Claim Review
 class ProviderClaimListView(APIView):
     """Provider admins view all claims for their plans."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsProviderAdmin]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
-        if not partner or partner.partner_type != "provider":
-            return Response(
-                {"error": "Access restricted to insurance providers."},
-                status=403
-            )
 
         claims = Claim.objects.filter(provider=partner)
 
@@ -204,15 +200,10 @@ class ProviderClaimListView(APIView):
 
 class ProviderClaimReviewView(APIView):
     """Provider admins review and update claim status."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsProviderAdmin]
 
     def get(self, request, claim_id):
         partner = get_partner_from_user(request.user)
-        if not partner or partner.partner_type != "provider":
-            return Response(
-                {"error": "Access restricted to insurance providers."},
-                status=403
-            )
 
         try:
             claim = Claim.objects.get(id=claim_id, provider=partner)
@@ -265,11 +256,9 @@ class ProviderClaimReviewView(APIView):
 
 class StaffClaimListView(APIView):
     """TheeInsurance super admins view and triage all claims."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdmin]
 
     def get(self, request):
-        if request.user.role != "super_admin":
-            return Response({"error": "Access restricted."}, status=403)
 
         claims = Claim.objects.all()
 
@@ -283,11 +272,9 @@ class StaffClaimListView(APIView):
 
 class StaffClaimReviewView(APIView):
     """TheeInsurance staff do initial review before forwarding to provider."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdmin]
 
     def patch(self, request, claim_id):
-        if request.user.role != "super_admin":
-            return Response({"error": "Access restricted."}, status=403)
 
         try:
             claim = Claim.objects.get(id=claim_id)
