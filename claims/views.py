@@ -1,6 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from webhooks.views import dispatch_webhook
 from accounts.permissions import IsSuperAdmin, IsProviderAdmin
 
 from .models import Claim, ClaimDocument, REQUIRED_CLAIM_DOCUMENTS
@@ -11,7 +12,6 @@ from .serializers import (
     ClaimReviewSerializer,
 )
 from accounts.models import CustomerProfile
-from subscriptions.models import PolicySubscription
 
 
 # Helpers
@@ -62,6 +62,19 @@ class CustomerClaimListCreateView(APIView):
             incident_description=serializer.validated_data["incident_description"],
             claimed_amount=serializer.validated_data["claimed_amount"],
             status="submitted",
+        )
+        
+        dispatch_webhook(
+            subscription.provider,
+            "claim.submitted",
+            {
+                "claim_id": str(claim.id),
+                "claim_reference": claim.claim_reference,
+                "claim_type": claim.claim_type,
+                "customer_email": profile.user.email,
+                "claimed_amount": str(claim.claimed_amount),
+                "subscription_id": str(subscription.id),
+            }
         )
 
         required_docs = REQUIRED_CLAIM_DOCUMENTS.get(claim_type, [])
@@ -244,6 +257,18 @@ class ProviderClaimReviewView(APIView):
             pass
 
         claim.save()
+        
+        dispatch_webhook(
+            claim.provider,
+            "claim.status_updated",
+            {
+                "claim_id": str(claim.id),
+                "claim_reference": claim.claim_reference,
+                "status": claim.status,
+                "customer_email": claim.customer.user.email,
+                "approved_amount": str(claim.approved_amount) if claim.approved_amount else None,
+            }
+        )
 
         return Response({
             "message": f"Claim {claim.status}.",

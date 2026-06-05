@@ -8,6 +8,7 @@ from django.utils import timezone
 from accounts.permissions import IsSuperAdmin
 from .models import PartnerKYC, CustomerKYC
 from core.models import Partner
+from webhooks.views import dispatch_webhook
 
 from .serializers import (
     CustomerRegistrationSerializer,
@@ -72,6 +73,18 @@ class PartnerKYCView(APIView):
             return Response({
                 "message": "KYC submitted. Your account will be reviewed shortly."
             }, status=201)
+        
+        dispatch_webhook(
+            partner,
+            "kyc.submitted",
+            {
+                "partner_id": str(partner.id),
+                "partner_name": partner.name,
+                "partner_type": partner.partner_type,
+            }
+        )
+
+        
         return Response(serializer.errors, status=400)
 
     def get(self, request):
@@ -275,6 +288,18 @@ class StaffPartnerKYCReviewView(APIView):
         if action == 'approve':
             kyc.partner.is_active = True
             kyc.partner.save()
+        
+        event = "kyc.approved" if action == "approve" else "kyc.rejected"
+        dispatch_webhook(
+            kyc.partner,
+            event,
+            {
+                "partner_id": str(kyc.partner.id),
+                "partner_name": kyc.partner.name,
+                "status": kyc.status,
+                "note": note,
+            }
+        )
         
         return Response({
             "message": f"Partner KYC {kyc.status}.",

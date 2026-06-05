@@ -62,9 +62,17 @@ class Webhook(models.Model):
 
 class WebhookEvent(models.Model):
     EVENT_CHOICES = [
+        # subscription events
         ("subscription.created", "Subscription Created"),
         ("subscription.cancelled", "Subscription Cancelled"),
         ("subscription.updated", "Subscription Updated"),
+        # claim events
+        ("claim.submitted", "Claim Submitted"),
+        ("claim.status_updated", "Claim Status Updated"),
+        # kyc events
+        ("kyc.submitted", "KYC Submitted"),
+        ("kyc.approved", "KYC Approved"),
+        ("kyc.rejected", "KYC Rejected"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

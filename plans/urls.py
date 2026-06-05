@@ -6,6 +6,8 @@ from .views import (
     ProviderPlanListCreateView,
     ProviderPlanDetailView,
     DistributorProviderAccessView,
+    PlanRecommendationView,
+    PlanContextView
 )
 
 urlpatterns = [
@@ -13,6 +15,8 @@ urlpatterns = [
     path("categories/", InsuranceCategoryListView.as_view(), name="category-list"),
     path("plans/", InsurancePlanListView.as_view(), name="plan-list"),
     path("plans/<uuid:plan_id>/", InsurancePlanDetailView.as_view(), name="plan-detail"),
+    path("plans/recommend/", PlanRecommendationView.as_view(), name="plan-recommend"),
+    path("plans/context/", PlanContextView.as_view(), name="plan-context"),
 
     # provider admin
     path("partner/plans/", ProviderPlanListCreateView.as_view(), name="provider-plan-list-create"),

@@ -11,6 +11,7 @@ from .serializers import (
     DistributorProviderAccessSerializer,
 )
 from core.models import Partner
+from accounts.models import CustomerProfile
 
 
 # Helpers
@@ -224,3 +225,95 @@ class DistributorProviderAccessView(APIView):
         access = DistributorProviderAccess.objects.filter(distributor=partner)
         serializer = DistributorProviderAccessSerializer(access, many=True)
         return Response({"providers": serializer.data})
+
+
+class PlanRecommendationView(APIView):
+    """
+    AI Plan Recommendation Engine.
+    n8n calls this with customer context, feeds response to AI model.
+    Returns filtered and ranked plans based on query params.
+    """
+    permission_classes = [AllowAny]
+    
+    def get(self, request):
+        partner = request.partner
+        category = request.query_params.get('category')
+        budget = request.query_params.get('budget')
+        coverage_level = request.query_params.get('coverage_level')
+        
+        # resolve accessible plans for this partner
+        if partner.partner_type == "provider":
+            plans = InsurancePlan.objects.filter(
+                provider=partner, is_active=True
+            )
+        else:
+            accessible_providers = DistributorProviderAccess.objects.filter(
+                distributor=partner, is_active=True
+            ).values_list("provider_id", flat=True)
+            plans = InsurancePlan.objects.filter(
+                provider__in=accessible_providers, is_active=True
+            )
+
+        if category:
+            plans = plans.filter(category__name=category)
+        if coverage_level:
+            plans = plans.filter(coverage_level=coverage_level)
+        if budget:
+            plans = plans.filter(premium__lte=budget)
+
+        # order by premium ascending — best value first
+        plans = plans.order_by("premium")
+
+        serializer = InsurancePlanSerializer(plans, many=True)
+        return Response({
+            "recommended_plans": serializer.data,
+            "filters_applied": {
+                "category": category,
+                "budget": budget,
+                "coverage_level": coverage_level,
+            }
+        })
+
+
+class PlanContextView(APIView):
+    """
+    Conversational Insurance Assistant.
+    Provides structured plan data for Claude API to reason over.
+    n8n fetches this and injects into Claude system prompt.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        partner = request.partner
+
+        if partner.partner_type == "provider":
+            plans = InsurancePlan.objects.filter(
+                provider=partner, is_active=True
+            )
+        else:
+            accessible_providers = DistributorProviderAccess.objects.filter(
+                distributor=partner, is_active=True
+            ).values_list("provider_id", flat=True)
+            plans = InsurancePlan.objects.filter(
+                provider__in=accessible_providers, is_active=True
+            )
+
+        context = []
+        for plan in plans:
+            context.append({
+                "id": str(plan.id),
+                "name": plan.name,
+                "provider": plan.provider.name,
+                "category": plan.category.get_name_display(),
+                "coverage_level": plan.get_coverage_level_display(),
+                "coverage_amount": str(plan.coverage_amount),
+                "premium": str(plan.premium),
+                "duration_months": plan.duration_months,
+                "description": plan.description,
+            })
+
+        return Response({
+            "partner": partner.name,
+            "total_plans": len(context),
+            "plans": context,
+        })
