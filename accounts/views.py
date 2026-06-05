@@ -1,12 +1,13 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from django.contrib.auth import authenticate
 from django.utils import timezone
-from accounts.permissions import IsSuperAdmin
-from .models import PartnerKYC, CustomerKYC
+
+from accounts.permissions import IsSuperAdmin, IsPartnerAdmin, IsCustomer
+from .models import PartnerKYC, CustomerKYC, CustomerProfile
 from core.models import Partner
 from webhooks.views import dispatch_webhook
 
@@ -17,8 +18,6 @@ from .serializers import (
     CustomerKYCSerializer,
     PartnerKYCSerializer,
 )
-from .models import CustomerProfile, PartnerKYC, CustomerKYC
-from core.models import Partner
 
 
 # Helper functions
@@ -41,6 +40,10 @@ def generate_tokens(user, partner_id=None):
 
 # Partner Onboarding
 class PartnerOnboardingView(APIView):
+    """
+    Public — new partners self-register.
+    Exempt from X-Partner-Key middleware (listed in EXEMPT_PATHS).
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -50,19 +53,26 @@ class PartnerOnboardingView(APIView):
             return Response({
                 "message": "Partner account created. Submit KYC to activate your account.",
                 "partner_id": str(partner.id),
-                "api_key": partner.api_key,    # shown once only
+                "api_key": partner.api_key,  # shown once only
             }, status=201)
         return Response(serializer.errors, status=400)
 
 
 # Partner KYC
 class PartnerKYCView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Partner admins submit and view their own KYC.
+    IsPartnerAdmin enforces: authenticated + partner_admin role.
+    No inline role check needed — permission class covers it.
+
+    BUG FIX: Previously dispatch_webhook was placed inside the serializer.errors
+    branch, meaning it fired on failed submissions and never on successful ones.
+    Moved to fire immediately after a successful save().
+    """
+    permission_classes = [IsPartnerAdmin]
 
     def post(self, request):
         partner = get_partner_from_user(request.user)
-        if not partner:
-            return Response({"error": "Partner account required."}, status=403)
 
         if hasattr(partner, 'kyc'):
             return Response({"error": "KYC already submitted."}, status=400)
@@ -70,27 +80,26 @@ class PartnerKYCView(APIView):
         serializer = PartnerKYCSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save(partner=partner)
+
+            # Fire webhook on successful submission only
+            dispatch_webhook(
+                partner,
+                "kyc.submitted",
+                {
+                    "partner_id": str(partner.id),
+                    "partner_name": partner.name,
+                    "partner_type": partner.partner_type,
+                }
+            )
+
             return Response({
                 "message": "KYC submitted. Your account will be reviewed shortly."
             }, status=201)
-        
-        dispatch_webhook(
-            partner,
-            "kyc.submitted",
-            {
-                "partner_id": str(partner.id),
-                "partner_name": partner.name,
-                "partner_type": partner.partner_type,
-            }
-        )
 
-        
         return Response(serializer.errors, status=400)
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
-        if not partner:
-            return Response({"error": "Partner account required."}, status=403)
 
         if not hasattr(partner, 'kyc'):
             return Response({"error": "No KYC submitted yet."}, status=404)
@@ -99,9 +108,11 @@ class PartnerKYCView(APIView):
         return Response(serializer.data)
 
 
-# Customer Registration 
-
+# Customer Registration
 class CustomerRegisterView(APIView):
+    """
+    Public — customers self-register under a partner.
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -121,7 +132,11 @@ class CustomerRegisterView(APIView):
 
 # Customer KYC
 class CustomerKYCView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Customers submit and view their own KYC.
+    IsCustomer prevents partner_admins and staff from reaching this endpoint.
+    """
+    permission_classes = [IsCustomer]
 
     def post(self, request):
         try:
@@ -135,9 +150,7 @@ class CustomerKYCView(APIView):
         serializer = CustomerKYCSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save(customer=profile)
-            return Response({
-                "message": "KYC submitted successfully."
-            }, status=201)
+            return Response({"message": "KYC submitted successfully."}, status=201)
         return Response(serializer.errors, status=400)
 
     def get(self, request):
@@ -155,6 +168,10 @@ class CustomerKYCView(APIView):
 
 # Login
 class LoginView(APIView):
+    """
+    Shared login for customers and partner admins.
+    Exempt from X-Partner-Key middleware (listed in EXEMPT_PATHS).
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -176,7 +193,6 @@ class LoginView(APIView):
 
         partner = get_partner_from_user(user)
         partner_id = partner.id if partner else None
-
         tokens = generate_tokens(user, partner_id=partner_id)
 
         return Response({
@@ -198,40 +214,44 @@ class TokenRefreshView(APIView):
 
         try:
             refresh = RefreshToken(refresh_token)
-            return Response({
-                "access": str(refresh.access_token)
-            })
+            return Response({"access": str(refresh.access_token)})
         except TokenError as e:
             return Response({"error": str(e)}, status=401)
 
-# TheeInsurance Staff Only Login View
+
+# TheeInsurance Staff Login
 class StaffLoginView(APIView):
+    """
+    Staff-only login. Rejects non super_admin users at the application layer.
+    Exempt from X-Partner-Key middleware (listed in EXEMPT_PATHS).
+    """
     permission_classes = [AllowAny]
-    
+
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
-        
+
         user = authenticate(
             request,
             username=serializer.validated_data['email'],
             password=serializer.validated_data['password']
         )
-        
+
         if not user:
-            return Response({'error': 'Invalid email or password'}, status=401)
-        
+            return Response({'error': 'Invalid email or password.'}, status=401)
+
         if not user.is_active:
-            return Response({'error': 'Account is inactive'}, status=403)
-        
+            return Response({'error': 'Account is inactive.'}, status=403)
+
         if user.role != 'super_admin':
             return Response(
-                {'error': 'Access restricted to TheeInsurance staff.'}, 
+                {'error': 'Access restricted to TheeInsurance staff.'},
                 status=403
             )
+
         tokens = generate_tokens(user)
-        
+
         return Response({
             "tokens": tokens,
             "role": user.role,
@@ -239,13 +259,24 @@ class StaffLoginView(APIView):
             "first_name": user.first_name,
         })
 
+
+# Staff — Partner KYC Review
 class StaffPartnerKYCReviewView(APIView):
+    """
+    TheeInsurance staff list and review partner KYC submissions.
+    IsSuperAdmin enforced at class level — covers all methods.
+
+    BUG FIX: Original code called request.query_params.set("status", "pending")
+    which throws AttributeError — QueryDict is immutable. Fixed to use .get()
+    with a default of "pending".
+    """
     permission_classes = [IsSuperAdmin]
-    
+
     def get(self, request):
-        """List all pending partner KYC submissions."""
-        status_filter = request.query_params.set("status", "pending")
+        """List partner KYC submissions. Defaults to pending, filterable by status."""
+        status_filter = request.query_params.get("status", "pending")
         kyc_list = PartnerKYC.objects.filter(status=status_filter)
+
         data = [
             {
                 "partner_id": str(k.partner.id),
@@ -257,38 +288,35 @@ class StaffPartnerKYCReviewView(APIView):
             }
             for k in kyc_list
         ]
-        
+
         return Response({"kyc_submissions": data})
-    
+
     def patch(self, request, partner_id):
-        """Approve or reject a partner KYC"""
+        """Approve or reject a partner KYC submission."""
         try:
             kyc = PartnerKYC.objects.get(partner__id=partner_id)
         except PartnerKYC.DoesNotExist:
+            return Response({"error": "KYC not found."}, status=404)
+
+        action = request.data.get("action")
+        note = request.data.get("note", "")
+
+        if action not in ["approve", "reject"]:
             return Response(
-                {'error': 'KYC not found'},
-                status=404
-            )
-        
-        action = request.data.get('action')
-        note = request.data.get('note', '')
-        
-        if action not in ['approve', 'reject']:
-            return Response(
-                {'error': "Action must be approve or reject."},
+                {"error": "Action must be 'approve' or 'reject'."},
                 status=400
             )
-        
-        kyc.status = 'approved' if action == 'approve' else 'rejected'
+
+        kyc.status = "approved" if action == "approve" else "rejected"
         kyc.review_note = note
         kyc.reviewed_by = request.user.email
         kyc.reviewed_at = timezone.now()
-        
-        # activate partner on approval
-        if action == 'approve':
+        kyc.save()
+
+        if action == "approve":
             kyc.partner.is_active = True
             kyc.partner.save()
-        
+
         event = "kyc.approved" if action == "approve" else "kyc.rejected"
         dispatch_webhook(
             kyc.partner,
@@ -300,7 +328,7 @@ class StaffPartnerKYCReviewView(APIView):
                 "note": note,
             }
         )
-        
+
         return Response({
             "message": f"Partner KYC {kyc.status}.",
             "partner": kyc.partner.name,
@@ -308,8 +336,12 @@ class StaffPartnerKYCReviewView(APIView):
         })
 
 
+# Staff — Distributor Provider Access
 class StaffDistributorAccessView(APIView):
-    """Grant or revoke distributor access to a provider."""
+    """
+    TheeInsurance staff grant or revoke a distributor's access to a provider.
+    IsSuperAdmin enforced at class level.
+    """
     permission_classes = [IsSuperAdmin]
 
     def post(self, request):
