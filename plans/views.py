@@ -1,6 +1,6 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import AllowAny
 from django.db.models import Q
 
 from .models import InsuranceCategory, InsurancePlan, DistributorProviderAccess
@@ -10,8 +10,7 @@ from .serializers import (
     InsurancePlanCreateSerializer,
     DistributorProviderAccessSerializer,
 )
-from core.models import Partner
-from accounts.models import CustomerProfile
+from accounts.permissions import IsProviderAdmin, IsDistributorAdmin, IsServiceAccount
 
 
 # Helpers
@@ -23,6 +22,10 @@ def get_partner_from_user(user):
 
 # Categories
 class InsuranceCategoryListView(APIView):
+    """
+    Public. Returns all active insurance categories.
+    Protected at middleware level via X-Partner-Key.
+    """
     permission_classes = [AllowAny]
 
     def get(self, request):
@@ -31,13 +34,13 @@ class InsuranceCategoryListView(APIView):
         return Response({"categories": serializer.data})
 
 
-# Plans — Customer Facing
+# Plans — Customer / Public Facing
 class InsurancePlanListView(APIView):
     """
     Public endpoint — customers browse available plans.
-    Scoped to the requesting partner:
-    - If provider: shows their own plans only
-    - If distributor: shows plans from providers they have access to
+    Scoped to the requesting partner via X-Partner-Key middleware:
+    - Provider partner: shows their own active plans only.
+    - Distributor partner: shows plans from providers they have access to.
     """
     permission_classes = [AllowAny]
 
@@ -45,20 +48,15 @@ class InsurancePlanListView(APIView):
         partner = request.partner
 
         if partner.partner_type == "provider":
-            plans = InsurancePlan.objects.filter(
-                provider=partner, is_active=True
-            )
+            plans = InsurancePlan.objects.filter(provider=partner, is_active=True)
         else:
-            # distributor — get accessible providers
             accessible_providers = DistributorProviderAccess.objects.filter(
                 distributor=partner, is_active=True
             ).values_list("provider_id", flat=True)
-
             plans = InsurancePlan.objects.filter(
                 provider__in=accessible_providers, is_active=True
             )
 
-        # filtering
         category = request.query_params.get("category")
         coverage_level = request.query_params.get("coverage_level")
         min_premium = request.query_params.get("min_premium")
@@ -78,7 +76,6 @@ class InsurancePlanListView(APIView):
                 Q(name__icontains=search) | Q(description__icontains=search)
             )
 
-        # sorting
         sort_by = request.query_params.get("sort_by", "-created_at")
         allowed_sorts = ["premium", "-premium", "created_at", "-created_at", "name"]
         if sort_by in allowed_sorts:
@@ -89,6 +86,10 @@ class InsurancePlanListView(APIView):
 
 
 class InsurancePlanDetailView(APIView):
+    """
+    Public endpoint — single plan detail.
+    Distributor access check is enforced at queryset level.
+    """
     permission_classes = [AllowAny]
 
     def get(self, request, plan_id):
@@ -99,7 +100,6 @@ class InsurancePlanDetailView(APIView):
         except InsurancePlan.DoesNotExist:
             return Response({"error": "Plan not found."}, status=404)
 
-        # verify this partner can see this plan
         if partner.partner_type == "distributor":
             has_access = DistributorProviderAccess.objects.filter(
                 distributor=partner,
@@ -117,17 +117,15 @@ class InsurancePlanDetailView(APIView):
 class ProviderPlanListCreateView(APIView):
     """
     Provider admins manage their own plans.
+    IsProviderAdmin enforces: authenticated + partner_admin + provider type.
+    No inline role checks needed.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsProviderAdmin]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
-        if not partner or partner.partner_type != "provider":
-            return Response({"error": "Only insurance providers can manage plans."}, status=403)
-
         plans = InsurancePlan.objects.filter(provider=partner)
 
-        # include inactive plans for provider's own view
         status_filter = request.query_params.get("status")
         if status_filter == "active":
             plans = plans.filter(is_active=True)
@@ -139,24 +137,23 @@ class ProviderPlanListCreateView(APIView):
 
     def post(self, request):
         partner = get_partner_from_user(request.user)
-        if not partner or partner.partner_type != "provider":
-            return Response({"error": "Only insurance providers can create plans."}, status=403)
-
         serializer = InsurancePlanCreateSerializer(
             data=request.data,
             context={"provider": partner}
         )
         if serializer.is_valid():
             plan = serializer.save()
-            return Response(
-                InsurancePlanSerializer(plan).data,
-                status=201
-            )
+            return Response(InsurancePlanSerializer(plan).data, status=201)
         return Response(serializer.errors, status=400)
 
 
 class ProviderPlanDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Provider admins retrieve, update, or soft-delete their own plans.
+    IsProviderAdmin enforces role at the class level.
+    Object ownership is enforced via provider=partner filter in get_object().
+    """
+    permission_classes = [IsProviderAdmin]
 
     def get_object(self, plan_id, partner):
         try:
@@ -166,21 +163,13 @@ class ProviderPlanDetailView(APIView):
 
     def get(self, request, plan_id):
         partner = get_partner_from_user(request.user)
-        if not partner or partner.partner_type != "provider":
-            return Response({"error": "Access denied."}, status=403)
-
         plan = self.get_object(plan_id, partner)
         if not plan:
             return Response({"error": "Plan not found."}, status=404)
-
-        serializer = InsurancePlanSerializer(plan)
-        return Response(serializer.data)
+        return Response(InsurancePlanSerializer(plan).data)
 
     def patch(self, request, plan_id):
         partner = get_partner_from_user(request.user)
-        if not partner or partner.partner_type != "provider":
-            return Response({"error": "Access denied."}, status=403)
-
         plan = self.get_object(plan_id, partner)
         if not plan:
             return Response({"error": "Plan not found."}, status=404)
@@ -196,56 +185,48 @@ class ProviderPlanDetailView(APIView):
 
     def delete(self, request, plan_id):
         partner = get_partner_from_user(request.user)
-        if not partner or partner.partner_type != "provider":
-            return Response({"error": "Access denied."}, status=403)
-
         plan = self.get_object(plan_id, partner)
         if not plan:
             return Response({"error": "Plan not found."}, status=404)
 
-        # soft delete — deactivate rather than destroy
+        # Soft delete — deactivate rather than destroy data.
         plan.is_active = False
         plan.save()
         return Response({"message": "Plan deactivated successfully."})
 
 
-# Distributor Provider Access
+# Distributor — Provider Access
 class DistributorProviderAccessView(APIView):
     """
-    Super admin grants distributors access to specific providers.
-    Distributors can view their own access list.
+    Distributors view the list of providers they have been granted access to.
+    IsDistributorAdmin enforces: authenticated + partner_admin + distributor type.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsDistributorAdmin]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
-        if not partner or partner.partner_type != "distributor":
-            return Response({"error": "Access restricted to distributors."}, status=403)
-
         access = DistributorProviderAccess.objects.filter(distributor=partner)
         serializer = DistributorProviderAccessSerializer(access, many=True)
         return Response({"providers": serializer.data})
 
 
+# AI / Automation — Internal Service Endpoints
 class PlanRecommendationView(APIView):
     """
     AI Plan Recommendation Engine.
-    n8n calls this with customer context, feeds response to AI model.
-    Returns filtered and ranked plans based on query params.
+    Called by n8n — requires a valid JWT from a dedicated service account.
+    Returns filtered and ranked plans based on query params for AI to reason over.
     """
-    permission_classes = [AllowAny]
-    
+    permission_classes = [IsServiceAccount]
+
     def get(self, request):
         partner = request.partner
         category = request.query_params.get('category')
         budget = request.query_params.get('budget')
         coverage_level = request.query_params.get('coverage_level')
-        
-        # resolve accessible plans for this partner
+
         if partner.partner_type == "provider":
-            plans = InsurancePlan.objects.filter(
-                provider=partner, is_active=True
-            )
+            plans = InsurancePlan.objects.filter(provider=partner, is_active=True)
         else:
             accessible_providers = DistributorProviderAccess.objects.filter(
                 distributor=partner, is_active=True
@@ -261,7 +242,6 @@ class PlanRecommendationView(APIView):
         if budget:
             plans = plans.filter(premium__lte=budget)
 
-        # order by premium ascending — best value first
         plans = plans.order_by("premium")
 
         serializer = InsurancePlanSerializer(plans, many=True)
@@ -277,19 +257,17 @@ class PlanRecommendationView(APIView):
 
 class PlanContextView(APIView):
     """
-    Conversational Insurance Assistant.
-    Provides structured plan data for Claude API to reason over.
-    n8n fetches this and injects into Claude system prompt.
+    Conversational Insurance Assistant context feed.
+    Called by n8n — requires a valid JWT from a dedicated service account.
+    Provides structured plan data injected into Claude system prompt.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsServiceAccount]
 
     def get(self, request):
         partner = request.partner
 
         if partner.partner_type == "provider":
-            plans = InsurancePlan.objects.filter(
-                provider=partner, is_active=True
-            )
+            plans = InsurancePlan.objects.filter(provider=partner, is_active=True)
         else:
             accessible_providers = DistributorProviderAccess.objects.filter(
                 distributor=partner, is_active=True
