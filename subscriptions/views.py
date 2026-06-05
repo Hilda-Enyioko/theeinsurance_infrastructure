@@ -1,12 +1,12 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from dateutil.relativedelta import relativedelta
 from decimal import Decimal
 
 from .models import PolicySubscription, SubscriptionDocument, REQUIRED_DOCUMENTS
 from .serializers import PolicySubscriptionSerializer, PolicySubscriptionCreateSerializer
 from accounts.models import CustomerProfile
+from accounts.permissions import IsCustomer, IsPartnerAdmin
 from plans.models import DistributorProviderAccess
 from webhooks.views import dispatch_webhook
 
@@ -49,7 +49,12 @@ def calculate_financials(plan, distributor):
 
 # Customer Subscriptions
 class CustomerSubscriptionListView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Customers list their own subscriptions.
+    IsCustomer prevents partner_admins and staff from hitting this endpoint.
+    Object ownership enforced via customer=profile filter.
+    """
+    permission_classes = [IsCustomer]
 
     def get(self, request):
         try:
@@ -68,7 +73,12 @@ class CustomerSubscriptionListView(APIView):
 
 
 class CustomerSubscriptionCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Customers initiate a new subscription.
+    IsCustomer enforced at class level.
+    Distributor access check is enforced at queryset level before subscription creation.
+    """
+    permission_classes = [IsCustomer]
 
     def post(self, request):
         try:
@@ -124,9 +134,12 @@ class CustomerSubscriptionCreateView(APIView):
 
 
 # Document Upload
-
 class SubscriptionDocumentUploadView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Customers upload and review documents for a pending subscription.
+    IsCustomer + customer=profile filter enforces ownership.
+    """
+    permission_classes = [IsCustomer]
 
     def post(self, request, subscription_id):
         try:
@@ -154,7 +167,6 @@ class SubscriptionDocumentUploadView(APIView):
         if not file:
             return Response({"error": "file is required."}, status=400)
 
-        # validate document_type is valid for this plan
         required_docs = get_required_documents(subscription.plan)
         valid_types = [choice[0] for choice in SubscriptionDocument.DOCUMENT_TYPE_CHOICES]
 
@@ -170,14 +182,12 @@ class SubscriptionDocumentUploadView(APIView):
                 status=400
             )
 
-        # create or replace the document
         SubscriptionDocument.objects.update_or_create(
             subscription=subscription,
             document_type=document_type,
             defaults={"file": file},
         )
 
-        # check if all required documents are now uploaded
         uploaded_types = list(
             subscription.documents.values_list("document_type", flat=True)
         )
@@ -193,7 +203,7 @@ class SubscriptionDocumentUploadView(APIView):
             })
 
         return Response({
-            "message": f"Document uploaded successfully.",
+            "message": "Document uploaded successfully.",
             "status": "pending_document",
             "missing_documents": missing_docs,
         })
@@ -232,10 +242,13 @@ class SubscriptionDocumentUploadView(APIView):
         })
 
 
-# ─── Subscription Detail ──────────────────────────────────────────────────────
-
+# Subscription Detail
 class CustomerSubscriptionDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Customers view or cancel a single subscription they own.
+    IsCustomer + customer=profile filter enforces ownership.
+    """
+    permission_classes = [IsCustomer]
 
     def get_object(self, subscription_id, profile):
         try:
@@ -292,10 +305,13 @@ class CustomerSubscriptionDetailView(APIView):
         return Response({"message": "Subscription cancelled successfully."})
 
 
-# ─── Payment Verification ─────────────────────────────────────────────────────
-
+# Payment Verification
 class PaymentVerificationView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Customers submit payment reference to activate their subscription.
+    IsCustomer + customer=profile filter enforces ownership.
+    """
+    permission_classes = [IsCustomer]
 
     def post(self, request, subscription_id):
         try:
@@ -310,7 +326,6 @@ class PaymentVerificationView(APIView):
         except PolicySubscription.DoesNotExist:
             return Response({"error": "Subscription not found."}, status=404)
 
-        # enforce document → payment order
         if subscription.status == "pending_document":
             required_docs = get_required_documents(subscription.plan)
             uploaded_types = list(
@@ -362,12 +377,16 @@ class PaymentVerificationView(APIView):
 
 # Partner Admin Subscription View
 class PartnerSubscriptionListView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Partner admins (both provider and distributor) view subscriptions scoped to them.
+    IsPartnerAdmin enforces: authenticated + partner_admin role.
+    Queryset is scoped by partner_type — providers see their policy subscriptions,
+    distributors see subscriptions they facilitated.
+    """
+    permission_classes = [IsPartnerAdmin]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
-        if not partner:
-            return Response({"error": "Partner account required."}, status=403)
 
         if partner.partner_type == "provider":
             subscriptions = PolicySubscription.objects.filter(provider=partner)
