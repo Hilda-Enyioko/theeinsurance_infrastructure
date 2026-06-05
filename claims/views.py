@@ -1,8 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from webhooks.views import dispatch_webhook
-from accounts.permissions import IsSuperAdmin, IsProviderAdmin
+from accounts.permissions import IsSuperAdmin, IsProviderAdmin, IsCustomer
 
 from .models import Claim, ClaimDocument, REQUIRED_CLAIM_DOCUMENTS
 from .serializers import (
@@ -23,7 +22,12 @@ def get_partner_from_user(user):
 
 # Customer Claims
 class CustomerClaimListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Customers list their own claims and submit new ones.
+    IsCustomer ensures partner_admins and staff cannot hit this endpoint.
+    Object ownership is enforced via customer=profile in all queries.
+    """
+    permission_classes = [IsCustomer]
 
     def get(self, request):
         try:
@@ -47,7 +51,6 @@ class CustomerClaimListCreateView(APIView):
 
         subscription = serializer.validated_data["subscription"]
 
-        # verify subscription belongs to this customer
         if subscription.customer != profile:
             return Response({"error": "Subscription not found."}, status=404)
 
@@ -63,7 +66,7 @@ class CustomerClaimListCreateView(APIView):
             claimed_amount=serializer.validated_data["claimed_amount"],
             status="submitted",
         )
-        
+
         dispatch_webhook(
             subscription.provider,
             "claim.submitted",
@@ -88,7 +91,11 @@ class CustomerClaimListCreateView(APIView):
 
 
 class CustomerClaimDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Customers view a single claim they own.
+    IsCustomer + customer=profile filter enforces ownership.
+    """
+    permission_classes = [IsCustomer]
 
     def get(self, request, claim_id):
         try:
@@ -107,7 +114,11 @@ class CustomerClaimDetailView(APIView):
 
 # Claim Document Upload
 class ClaimDocumentUploadView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Customers upload and view documents for their claims.
+    IsCustomer + customer=profile filter enforces ownership.
+    """
+    permission_classes = [IsCustomer]
 
     def post(self, request, claim_id):
         try:
@@ -191,12 +202,14 @@ class ClaimDocumentUploadView(APIView):
 
 # Provider Claim Review
 class ProviderClaimListView(APIView):
-    """Provider admins view all claims for their plans."""
+    """
+    Provider admins view all claims submitted against their plans.
+    IsProviderAdmin enforces: authenticated + partner_admin + provider type.
+    """
     permission_classes = [IsProviderAdmin]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
-
         claims = Claim.objects.filter(provider=partner)
 
         status_filter = request.query_params.get("status")
@@ -212,7 +225,11 @@ class ProviderClaimListView(APIView):
 
 
 class ProviderClaimReviewView(APIView):
-    """Provider admins review and update claim status."""
+    """
+    Provider admins review and update claim status.
+    IsProviderAdmin at class level covers both GET and PATCH.
+    Object ownership enforced via provider=partner filter.
+    """
     permission_classes = [IsProviderAdmin]
 
     def get(self, request, claim_id):
@@ -228,11 +245,6 @@ class ProviderClaimReviewView(APIView):
 
     def patch(self, request, claim_id):
         partner = get_partner_from_user(request.user)
-        if not partner or partner.partner_type != "provider":
-            return Response(
-                {"error": "Access restricted to insurance providers."},
-                status=403
-            )
 
         try:
             claim = Claim.objects.get(id=claim_id, provider=partner)
@@ -244,20 +256,17 @@ class ProviderClaimReviewView(APIView):
             return Response(serializer.errors, status=400)
 
         claim.status = serializer.validated_data["status"]
-        claim.provider_review_note = serializer.validated_data.get(
-            "review_note", ""
-        )
+        claim.provider_review_note = serializer.validated_data.get("review_note", "")
         if serializer.validated_data.get("approved_amount"):
             claim.approved_amount = serializer.validated_data["approved_amount"]
 
-        # track who reviewed it
         try:
             claim.reviewed_by_provider = request.user.partner_admin_profile
         except Exception:
             pass
 
         claim.save()
-        
+
         dispatch_webhook(
             claim.provider,
             "claim.status_updated",
@@ -277,14 +286,14 @@ class ProviderClaimReviewView(APIView):
         })
 
 
-# TheeInsurance Staff Review
-
+# TheeInsurance Staff Claim Review
 class StaffClaimListView(APIView):
-    """TheeInsurance super admins view and triage all claims."""
+    """
+    TheeInsurance super admins view and triage all claims across all partners.
+    """
     permission_classes = [IsSuperAdmin]
 
     def get(self, request):
-
         claims = Claim.objects.all()
 
         status_filter = request.query_params.get("status")
@@ -296,11 +305,21 @@ class StaffClaimListView(APIView):
 
 
 class StaffClaimReviewView(APIView):
-    """TheeInsurance staff do initial review before forwarding to provider."""
+    """
+    TheeInsurance staff do initial triage before forwarding to provider.
+    """
     permission_classes = [IsSuperAdmin]
 
-    def patch(self, request, claim_id):
+    def get(self, request, claim_id):
+        try:
+            claim = Claim.objects.get(id=claim_id)
+        except Claim.DoesNotExist:
+            return Response({"error": "Claim not found."}, status=404)
 
+        serializer = ClaimSerializer(claim)
+        return Response(serializer.data)
+
+    def patch(self, request, claim_id):
         try:
             claim = Claim.objects.get(id=claim_id)
         except Claim.DoesNotExist:
@@ -311,9 +330,7 @@ class StaffClaimReviewView(APIView):
             return Response(serializer.errors, status=400)
 
         claim.status = serializer.validated_data["status"]
-        claim.theeinsurance_review_note = serializer.validated_data.get(
-            "review_note", ""
-        )
+        claim.theeinsurance_review_note = serializer.validated_data.get("review_note", "")
         claim.reviewed_by_theeinsurance = request.user
         claim.save()
 
