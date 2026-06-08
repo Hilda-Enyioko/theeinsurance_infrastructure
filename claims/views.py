@@ -11,6 +11,7 @@ from .serializers import (
     ClaimReviewSerializer,
 )
 from accounts.models import CustomerProfile
+from core.throttles import PartnerRateThrottle
 
 
 # Helpers
@@ -28,6 +29,7 @@ class CustomerClaimListCreateView(APIView):
     Object ownership is enforced via customer=profile in all queries.
     """
     permission_classes = [IsCustomer]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         try:
@@ -96,6 +98,7 @@ class CustomerClaimDetailView(APIView):
     IsCustomer + customer=profile filter enforces ownership.
     """
     permission_classes = [IsCustomer]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request, claim_id):
         try:
@@ -119,6 +122,7 @@ class ClaimDocumentUploadView(APIView):
     IsCustomer + customer=profile filter enforces ownership.
     """
     permission_classes = [IsCustomer]
+    throttle_classes = [PartnerRateThrottle]
 
     def post(self, request, claim_id):
         try:
@@ -207,6 +211,7 @@ class ProviderClaimListView(APIView):
     IsProviderAdmin enforces: authenticated + partner_admin + provider type.
     """
     permission_classes = [IsProviderAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
@@ -231,6 +236,7 @@ class ProviderClaimReviewView(APIView):
     Object ownership enforced via provider=partner filter.
     """
     permission_classes = [IsProviderAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request, claim_id):
         partner = get_partner_from_user(request.user)
@@ -292,6 +298,7 @@ class StaffClaimListView(APIView):
     TheeInsurance super admins view and triage all claims across all partners.
     """
     permission_classes = [IsSuperAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         claims = Claim.objects.all()
@@ -309,6 +316,7 @@ class StaffClaimReviewView(APIView):
     TheeInsurance staff do initial triage before forwarding to provider.
     """
     permission_classes = [IsSuperAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request, claim_id):
         try:

@@ -9,6 +9,7 @@ from accounts.models import CustomerProfile
 from accounts.permissions import IsCustomer, IsPartnerAdmin
 from plans.models import DistributorProviderAccess
 from webhooks.views import dispatch_webhook
+from core.throttles import PartnerRateThrottle
 
 
 # Helper Functions
@@ -55,6 +56,7 @@ class CustomerSubscriptionListView(APIView):
     Object ownership enforced via customer=profile filter.
     """
     permission_classes = [IsCustomer]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         try:
@@ -79,6 +81,7 @@ class CustomerSubscriptionCreateView(APIView):
     Distributor access check is enforced at queryset level before subscription creation.
     """
     permission_classes = [IsCustomer]
+    throttle_classes = [PartnerRateThrottle]
 
     def post(self, request):
         try:
@@ -140,6 +143,7 @@ class SubscriptionDocumentUploadView(APIView):
     IsCustomer + customer=profile filter enforces ownership.
     """
     permission_classes = [IsCustomer]
+    throttle_classes = [PartnerRateThrottle]
 
     def post(self, request, subscription_id):
         try:
@@ -249,6 +253,7 @@ class CustomerSubscriptionDetailView(APIView):
     IsCustomer + customer=profile filter enforces ownership.
     """
     permission_classes = [IsCustomer]
+    throttle_classes = [PartnerRateThrottle]
 
     def get_object(self, subscription_id, profile):
         try:
@@ -312,6 +317,7 @@ class PaymentVerificationView(APIView):
     IsCustomer + customer=profile filter enforces ownership.
     """
     permission_classes = [IsCustomer]
+    throttle_classes = [PartnerRateThrottle]
 
     def post(self, request, subscription_id):
         try:
@@ -384,6 +390,7 @@ class PartnerSubscriptionListView(APIView):
     distributors see subscriptions they facilitated.
     """
     permission_classes = [IsPartnerAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)

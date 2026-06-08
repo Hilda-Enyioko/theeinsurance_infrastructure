@@ -11,6 +11,7 @@ from .serializers import (
     DistributorProviderAccessSerializer,
 )
 from accounts.permissions import IsProviderAdmin, IsDistributorAdmin, IsServiceAccount
+from core.throttles import PartnerRateThrottle
 
 
 # Helpers
@@ -27,6 +28,7 @@ class InsuranceCategoryListView(APIView):
     Protected at middleware level via X-Partner-Key.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         categories = InsuranceCategory.objects.filter(is_active=True)
@@ -43,6 +45,7 @@ class InsurancePlanListView(APIView):
     - Distributor partner: shows plans from providers they have access to.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         partner = request.partner
@@ -91,6 +94,7 @@ class InsurancePlanDetailView(APIView):
     Distributor access check is enforced at queryset level.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request, plan_id):
         partner = request.partner
@@ -121,6 +125,7 @@ class ProviderPlanListCreateView(APIView):
     No inline role checks needed.
     """
     permission_classes = [IsProviderAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
@@ -154,6 +159,7 @@ class ProviderPlanDetailView(APIView):
     Object ownership is enforced via provider=partner filter in get_object().
     """
     permission_classes = [IsProviderAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get_object(self, plan_id, partner):
         try:
@@ -202,6 +208,7 @@ class DistributorProviderAccessView(APIView):
     IsDistributorAdmin enforces: authenticated + partner_admin + distributor type.
     """
     permission_classes = [IsDistributorAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
@@ -218,6 +225,7 @@ class PlanRecommendationView(APIView):
     Returns filtered and ranked plans based on query params for AI to reason over.
     """
     permission_classes = [IsServiceAccount]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         partner = request.partner
@@ -262,6 +270,7 @@ class PlanContextView(APIView):
     Provides structured plan data injected into Claude system prompt.
     """
     permission_classes = [IsServiceAccount]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         partner = request.partner

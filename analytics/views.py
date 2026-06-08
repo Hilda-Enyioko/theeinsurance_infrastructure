@@ -5,6 +5,7 @@ from django.db.models import Count, Sum
 from subscriptions.models import PolicySubscription
 from accounts.models import CustomerProfile
 from accounts.permissions import IsProviderAdmin, IsDistributorAdmin
+from core.throttles import PartnerRateThrottle
 
 
 # Helper
@@ -22,6 +23,7 @@ class ProviderSummaryView(APIView):
     No inline partner_type check needed.
     """
     permission_classes = [IsProviderAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
@@ -66,6 +68,7 @@ class ProviderSubscriptionsTrendsView(APIView):
     IsProviderAdmin enforced at class level.
     """
     permission_classes = [IsProviderAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
@@ -89,6 +92,7 @@ class DistributorSummaryView(APIView):
     No inline partner_type check needed.
     """
     permission_classes = [IsDistributorAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
@@ -126,6 +130,7 @@ class DistributorSubscriptionsTrendsView(APIView):
     IsDistributorAdmin enforced at class level.
     """
     permission_classes = [IsDistributorAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)

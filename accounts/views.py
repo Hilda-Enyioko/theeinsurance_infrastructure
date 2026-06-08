@@ -1,3 +1,13 @@
+"""
+Authentication, KYC, and Core System Administration Views.
+
+This module provides Django REST Framework (DRF) API endpoints handling:
+- Multi-tenant Partner onboarding and Know Your Customer (KYC) submissions.
+- Customer account registration and KYC linking under designated partners.
+- Centralized user login and token management (SimpleJWT).
+- High-level administrative operations by internal TheeInsurance staff.
+"""
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
@@ -7,7 +17,8 @@ from django.contrib.auth import authenticate
 from django.utils import timezone
 
 from accounts.permissions import IsSuperAdmin, IsPartnerAdmin, IsCustomer
-from .models import PartnerKYC, CustomerKYC, CustomerProfile
+from core.throttles import IPRateThrottle, PartnerRateThrottle
+from .models import PartnerKYC, CustomerProfile
 from core.models import Partner
 from webhooks.views import dispatch_webhook
 
@@ -22,12 +33,22 @@ from .serializers import (
 
 # Helper functions
 def get_partner_from_user(user):
+    """
+    Extract the associated partner entity from a user instance 
+    if they are a partner admin.
+    """
+
     if hasattr(user, 'partner_admin_profile'):
         return user.partner_admin_profile.partner
     return None
 
 
 def generate_tokens(user, partner_id=None):
+    """
+    Generate SimpleJWT access and refresh tokens 
+    embedded with role and tenant claims.
+    """
+
     refresh = RefreshToken.for_user(user)
     refresh["role"] = user.role
     if partner_id:
@@ -39,17 +60,24 @@ def generate_tokens(user, partner_id=None):
 
 
 # Partner Onboarding
+
 class PartnerOnboardingView(APIView):
     """
     Public — new partners self-register.
-    Exempt from X-Partner-Key middleware (listed in EXEMPT_PATHS).
+    IPRateThrottle: prevents automated partner account creation.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [IPRateThrottle]
 
     def post(self, request):
+        """
+        Accepts registration parameters, spins up an inactive Partner profile, 
+        and issues an API key for subsequent configuration steps
+        """
+
         serializer = PartnerOnboardingSerializer(data=request.data)
         if serializer.is_valid():
-            partner, user = serializer.save()
+            partner = serializer.save()
             return Response({
                 "message": "Partner account created. Submit KYC to activate your account.",
                 "partner_id": str(partner.id),
@@ -59,19 +87,21 @@ class PartnerOnboardingView(APIView):
 
 
 # Partner KYC
+
 class PartnerKYCView(APIView):
     """
     Partner admins submit and view their own KYC.
-    IsPartnerAdmin enforces: authenticated + partner_admin role.
-    No inline role check needed — permission class covers it.
-
-    BUG FIX: Previously dispatch_webhook was placed inside the serializer.errors
-    branch, meaning it fired on failed submissions and never on successful ones.
-    Moved to fire immediately after a successful save().
+    PartnerRateThrottle: scoped to the partner tenant.
     """
     permission_classes = [IsPartnerAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def post(self, request):
+        """
+        Allows verified corporate administrators to upload operational documentation 
+        for administrative review, or pull down their current submission state.
+        """
+
         partner = get_partner_from_user(request.user)
 
         if hasattr(partner, 'kyc'):
@@ -81,7 +111,6 @@ class PartnerKYCView(APIView):
         if serializer.is_valid():
             serializer.save(partner=partner)
 
-            # Fire webhook on successful submission only
             dispatch_webhook(
                 partner,
                 "kyc.submitted",
@@ -99,6 +128,10 @@ class PartnerKYCView(APIView):
         return Response(serializer.errors, status=400)
 
     def get(self, request):
+        """
+        Allow only authenticated partners retrieve KYC dicuments they own.
+        """
+
         partner = get_partner_from_user(request.user)
 
         if not hasattr(partner, 'kyc'):
@@ -109,13 +142,21 @@ class PartnerKYCView(APIView):
 
 
 # Customer Registration
+
 class CustomerRegisterView(APIView):
     """
     Public — customers self-register under a partner.
+    IPRateThrottle: prevents automated account creation / credential stuffing.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [IPRateThrottle]
 
     def post(self, request):
+        """
+        Uses tenant context attached to the request (via upstream middleware parsing)
+        to bind the newly registered customer account to the parent organization.
+        """
+
         serializer = CustomerRegistrationSerializer(
             data=request.data,
             context={"partner": request.partner}
@@ -131,14 +172,20 @@ class CustomerRegisterView(APIView):
 
 
 # Customer KYC
+
 class CustomerKYCView(APIView):
     """
     Customers submit and view their own KYC.
-    IsCustomer prevents partner_admins and staff from reaching this endpoint.
+    PartnerRateThrottle: scoped to the partner tenant.
     """
     permission_classes = [IsCustomer]
+    throttle_classes = [PartnerRateThrottle]
 
     def post(self, request):
+        """
+        Allows registered system consumers to submit required identification metrics.
+        """
+
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
         except CustomerProfile.DoesNotExist:
@@ -154,6 +201,10 @@ class CustomerKYCView(APIView):
         return Response(serializer.errors, status=400)
 
     def get(self, request):
+        """
+        Inspect Customer's background check records inside the scope of the current partner
+        """
+
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
         except CustomerProfile.DoesNotExist:
@@ -167,14 +218,21 @@ class CustomerKYCView(APIView):
 
 
 # Login
+
 class LoginView(APIView):
     """
     Shared login for customers and partner admins.
-    Exempt from X-Partner-Key middleware (listed in EXEMPT_PATHS).
+    IPRateThrottle: strict IP-based limit — primary brute force surface.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [IPRateThrottle]
 
     def post(self, request):
+        """
+        Verifies credentials and returns signed authentication payloads appended 
+        with role authorizations and multi-tenant scoping claims.
+        """
+
         serializer = LoginSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
@@ -204,10 +262,20 @@ class LoginView(APIView):
 
 
 # Token Refresh
+
 class TokenRefreshView(APIView):
+    """
+    IPRateThrottle: token refresh can also be abused for token farming.
+    """
     permission_classes = [AllowAny]
+    throttle_classes = [IPRateThrottle]
 
     def post(self, request):
+        """
+        Validates submitted refresh states to hand out fresh access hashes, 
+        shielding downstream views from re-authentication requirements.
+        """
+
         refresh_token = request.data.get("refresh")
         if not refresh_token:
             return Response({"error": "Refresh token is required."}, status=400)
@@ -220,14 +288,22 @@ class TokenRefreshView(APIView):
 
 
 # TheeInsurance Staff Login
+
 class StaffLoginView(APIView):
     """
-    Staff-only login. Rejects non super_admin users at the application layer.
-    Exempt from X-Partner-Key middleware (listed in EXEMPT_PATHS).
+    Staff-only login.
+    IPRateThrottle: same brute force protection as customer login.
+    This is the highest-value credential surface in the system.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [IPRateThrottle]
 
     def post(self, request):
+        """
+        Enforces strict structural checks to confirm the user possesses 
+        elevated global administrative roles (`super_admin`) before dispatching tokens.
+        """
+        
         serializer = LoginSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
@@ -261,19 +337,20 @@ class StaffLoginView(APIView):
 
 
 # Staff — Partner KYC Review
+
 class StaffPartnerKYCReviewView(APIView):
     """
     TheeInsurance staff list and review partner KYC submissions.
-    IsSuperAdmin enforced at class level — covers all methods.
-
-    BUG FIX: Original code called request.query_params.set("status", "pending")
-    which throws AttributeError — QueryDict is immutable. Fixed to use .get()
-    with a default of "pending".
+    PartnerRateThrottle: staff actions are still tenant-scoped operations.
     """
     permission_classes = [IsSuperAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
-        """List partner KYC submissions. Defaults to pending, filterable by status."""
+        """
+        Allows internal staff members to query incoming organizational applications
+        """
+
         status_filter = request.query_params.get("status", "pending")
         kyc_list = PartnerKYC.objects.filter(status=status_filter)
 
@@ -292,7 +369,11 @@ class StaffPartnerKYCReviewView(APIView):
         return Response({"kyc_submissions": data})
 
     def patch(self, request, partner_id):
-        """Approve or reject a partner KYC submission."""
+        """
+        Issue state confirmations (approve/reject), 
+        record notes, and toggle partner operational states.
+        """
+        
         try:
             kyc = PartnerKYC.objects.get(partner__id=partner_id)
         except PartnerKYC.DoesNotExist:
@@ -337,14 +418,21 @@ class StaffPartnerKYCReviewView(APIView):
 
 
 # Staff — Distributor Provider Access
+
 class StaffDistributorAccessView(APIView):
     """
-    TheeInsurance staff grant or revoke a distributor's access to a provider.
-    IsSuperAdmin enforced at class level.
+    TheeInsurance staff grant or revoke distributor access to a provider.
+    PartnerRateThrottle applied.
     """
     permission_classes = [IsSuperAdmin]
+    throttle_classes = [PartnerRateThrottle]
 
     def post(self, request):
+        """
+        Handles creation, enabling of secure access lines 
+        between downstream insurance "distributors" and core policy "providers".
+        """
+
         from plans.models import DistributorProviderAccess
 
         distributor_id = request.data.get("distributor_id")
@@ -382,6 +470,11 @@ class StaffDistributorAccessView(APIView):
         }, status=201)
 
     def delete(self, request):
+        """
+        Disabling of secure access lines 
+        between downstream insurance "distributors" and core policy "providers"
+        """
+
         from plans.models import DistributorProviderAccess
 
         distributor_id = request.data.get("distributor_id")

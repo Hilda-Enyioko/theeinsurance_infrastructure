@@ -15,6 +15,7 @@ from pathlib import Path
 from datetime import timedelta
 from decouple import config
 
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -143,6 +144,11 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    "DEFAULT_THROTTLE_CLASSES": [],
+    "DEFAULT_THROTTLE_RATES": {
+        "auth": "10/hour",
+        "partner": "1000/hour",
+    }
 }
 
 # Simple JWT configuration
@@ -169,3 +175,20 @@ AUTH_USER_MODEL = "accounts.CustomUser"
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+
+# CACHE CONFIGURATION
+# Dev: LocMemCache (default, no setup needed)
+# Prod: swap to Redis by changing the BACKEND and adding LOCATION
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "theeinsurance-throttle-cache",
+    }
+    # PRODUCTION
+    # "default": {
+    #     "BACKEND": "django.core.cache.backends.redis.RedisCache",
+    #     "LOCATION": config("REDIS_URL"),
+    # }
+}
