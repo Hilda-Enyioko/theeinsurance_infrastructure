@@ -27,4 +27,5 @@ urlpatterns = [
     path('api/v1/partner/', include('analytics.urls')),
     path('api/v1/partner/', include('webhooks.urls')),
     path("api/v1/", include("claims.urls")),
+    path('payments/', include('payments.urls', namespace='payments')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

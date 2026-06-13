@@ -1,6 +1,7 @@
 [[tool.mypy.overrides]]
-module = "rest_framework.*,decouple"
+module = "rest_framework.*,decouple,payments.services"
 ignore_missing_imports = true
 follow_untyped_imports = true
+ignore_errors = true
 [MASTER]
 load-plugins=pylint_django

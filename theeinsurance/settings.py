@@ -13,7 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import os
 from pathlib import Path
 from datetime import timedelta
-from decouple import config
+from decouple import config  # type: ignore
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'analytics',
     'claims',
     'core',
+    'payments',
     'plans',
     'subscriptions',
     'webhooks',
@@ -192,3 +193,11 @@ CACHES = {
     #     "LOCATION": config("REDIS_URL"),
     # }
 }
+
+INTERSWITCH_BASE_URL = "https://sandbox.interswitchng.com"  # test
+INTERSWITCH_CLIENT_ID = config("INTERSWITCH_CLIENT_ID")
+INTERSWITCH_CLIENT_SECRET = config("INTERSWITCH_CLIENT_SECRET")
+INTERSWITCH_MERCHANT_CODE = config("INTERSWITCH_MERCHANT_CODE")
+INTERSWITCH_PAYABLE_CODE = config("INTERSWITCH_PAYABLE_CODE")
+INTERSWITCH_REDIRECT_URL = config("INTERSWITCH_REDIRECT_URL")
+N8N_WEBHOOK_URL = config("N8N_WEBHOOK_URL")

@@ -15,14 +15,19 @@ class PolicySubscription(models.Model):
         ("pending_document", "Pending Document"),
     ]
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    customer = models.ForeignKey(
+    id: models.UUIDField = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,editable=False
+    )
+
+    customer: models.ForeignKey = models.ForeignKey(
         CustomerProfile,
         on_delete=models.CASCADE,
         related_name="subscriptions",
         db_index=True,
     )
-    plan = models.ForeignKey(
+
+    plan: models.ForeignKey = models.ForeignKey(
         InsurancePlan,
         on_delete=models.CASCADE,
         related_name="subscriptions",
@@ -30,13 +35,14 @@ class PolicySubscription(models.Model):
     )
 
     # both partners tracked on every transaction
-    provider = models.ForeignKey(
+    provider: models.ForeignKey = models.ForeignKey(
         Partner,
         on_delete=models.CASCADE,
         related_name="provider_subscriptions",
         limit_choices_to={"partner_type": "provider"},
     )
-    distributor = models.ForeignKey(
+    
+    distributor: models.ForeignKey = models.ForeignKey(
         Partner,
         on_delete=models.SET_NULL,
         related_name="distributor_subscriptions",
@@ -46,9 +52,9 @@ class PolicySubscription(models.Model):
     )
 
     # policy period
-    start_date = models.DateField(db_index=True)
-    end_date = models.DateField(db_index=True)
-    status = models.CharField(
+    start_date: models.DateField = models.DateField(db_index=True)
+    end_date: models.DateField = models.DateField(db_index=True)
+    status: models.CharField = models.CharField(
         max_length=20, 
         choices=STATUS_CHOICES, 
         default="pending_document",
@@ -56,17 +62,17 @@ class PolicySubscription(models.Model):
     )
 
     # financials
-    amount_paid = models.DecimalField(max_digits=20, decimal_places=2)
-    provider_payout = models.DecimalField(max_digits=20, decimal_places=2, default=0.00)
-    distributor_commission = models.DecimalField(max_digits=20, decimal_places=2, default=0.00)
-    platform_fee = models.DecimalField(max_digits=20, decimal_places=2, default=0.00)
+    amount_paid: models.DecimalField = models.DecimalField(max_digits=20, decimal_places=2)
+    provider_payout: models.DecimalField = models.DecimalField(max_digits=20, decimal_places=2, default=0.00)
+    distributor_commission: models.DecimalField = models.DecimalField(max_digits=20, decimal_places=2, default=0.00)
+    platform_fee: models.DecimalField = models.DecimalField(max_digits=20, decimal_places=2, default=0.00)
 
     # payment reference from payment gateway
-    payment_reference = models.CharField(max_length=255, unique=True, null=True, blank=True)
-    payment_verified = models.BooleanField(default=False)
+    payment_reference: models.CharField = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    payment_verified: models.BooleanField = models.BooleanField(default=False)
 
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
+    updated_at: models.DateTimeField = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-created_at"]
@@ -124,15 +130,15 @@ class SubscriptionDocument(models.Model):
         ("other", "Other"),
     ]
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    subscription = models.ForeignKey(
+    id: models.UUIDField = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    subscription: models.ForeignKey = models.ForeignKey(
         PolicySubscription,
         on_delete=models.CASCADE,
         related_name="documents",
     )
-    document_type = models.CharField(max_length=50, choices=DOCUMENT_TYPE_CHOICES)
-    file = models.FileField(upload_to="subscriptions/documents/")
-    uploaded_at = models.DateTimeField(auto_now_add=True)
+    document_type: models.CharField = models.CharField(max_length=50, choices=DOCUMENT_TYPE_CHOICES)
+    file: models.FileField = models.FileField(upload_to="subscriptions/documents/")
+    uploaded_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         unique_together = ["subscription", "document_type"]
