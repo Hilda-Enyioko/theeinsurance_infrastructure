@@ -8,6 +8,7 @@ Three endpoints covering the full Quickteller Pay redirect lifecycle:
 """
 
 import logging
+import json
 
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -174,10 +175,20 @@ class PaymentWebhookView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        raw_body = request.body
+
+        try:
+            payload = json.loads(raw_body)
+        except json.JSONDecodeError:
+            return Response(
+                {"detail": "Invalid JSON."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         try:
             process_webhook(
-                payload=request.data,
-                raw_body=request.body,
+                payload=payload,
+                raw_body=raw_body,
                 signature=signature,
             )
         except SignatureVerificationError:

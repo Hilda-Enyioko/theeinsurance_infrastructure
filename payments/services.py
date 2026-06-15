@@ -95,6 +95,9 @@ def initiate_payment(transaction: Transaction) -> dict:
     payment URL that the frontend should redirect the user to.
     """
     
+    user = transaction.initiated_by
+    customer_name = f"{user.first_name} {user.last_name}".strip()
+    
     payload = {
         "merchantCode": settings.INTERSWITCH_MERCHANT_CODE,
         "payableCode": settings.INTERSWITCH_PAYABLE_CODE,
@@ -102,7 +105,7 @@ def initiate_payment(transaction: Transaction) -> dict:
         "transactionReference": transaction.reference,
         "currencyCode": "566",  # NGN ISO 4217 numeric
         "customerEmail": transaction.initiated_by.email,
-        "customerName": transaction.initiated_by.get_full_name(),
+        "customerName": customer_name,
         "redirectUrl": _build_redirect_url(transaction),
         "displayName": "TheeInsurance Portal",
     }
