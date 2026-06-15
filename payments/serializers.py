@@ -9,7 +9,6 @@ Two serializers covering the payment lifecycle:
 
 import logging
 
-from django.shortcuts import get_object_or_404
 from rest_framework import serializers
 
 from subscriptions.models import PolicySubscription
@@ -42,8 +41,9 @@ class InitiatePaymentSerializer(serializers.Serializer):
         try:
             subscription = PolicySubscription.objects.get(
                 id=value,
-                user=request.customer
+                customer__user=request.user
             )
+        
         except PolicySubscription.DoesNotExist:
             raise serializers.ValidationError(
                 "Subscription not found or does not belong to you."
@@ -58,13 +58,16 @@ class InitiatePaymentSerializer(serializers.Serializer):
           1. Subscription must be in a payable state
           2. No active PENDING transaction for this subscription
         """
+        
         subscription = self._subscription
 
-        payable_statuses = ['PENDING', 'EXPIRED']
+        payable_statuses = ['pending_payment', 'expired']
+
         if subscription.status not in payable_statuses:
             raise serializers.ValidationError(
-                f"Subscription is not in a payable state (current: {subscription.status})."
-            )
+                f"Subscription is not in a payable state"
+                f"(current: {subscription.status})."
+        )
 
         already_pending = Transaction.objects.filter(
             subscription=subscription,
@@ -73,8 +76,7 @@ class InitiatePaymentSerializer(serializers.Serializer):
 
         if already_pending:
             raise serializers.ValidationError(
-                "A pending transaction already exists for this subscription. "
-                "Complete or cancel it before initiating a new one."
+                "A pending transaction already exists for this subscription."
             )
 
         return attrs
@@ -91,7 +93,7 @@ class InitiatePaymentSerializer(serializers.Serializer):
         transaction = Transaction.objects.create(
             subscription=subscription,
             initiated_by=request.user,
-            amount=subscription.plan.premium,
+            amount=subscription.amount_paid,
             payment_type=self.validated_data['payment_type'],
             payment_status=Transaction.PAYMENT_STATUS.PENDING,
         )
@@ -102,7 +104,6 @@ class InitiatePaymentSerializer(serializers.Serializer):
             subscription.id,
             request.user.id,
         )
-
         return transaction
 
 
