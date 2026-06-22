@@ -4,6 +4,7 @@ from .models import Partner
 
 EXEMPT_PATHS = [
     "/api/v1/partner/onboard/",
+    "/api/v1/partner/kyc/",
     "/api/v1/auth/login/",
     "/api/v1/auth/token/refresh/",
     "/api/v1/staff/auth/login/",

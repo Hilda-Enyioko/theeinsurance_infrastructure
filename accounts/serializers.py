@@ -156,7 +156,7 @@ class PartnerOnboardingSerializer(serializers.Serializer):
             role="owner",
         )
 
-        return partner, user
+        return partner
 
 # Login
 class LoginSerializer(serializers.Serializer):
