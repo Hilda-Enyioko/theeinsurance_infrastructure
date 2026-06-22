@@ -1,0 +1,1 @@
+gunicorn theeinsurance.wsgi:application
