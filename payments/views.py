@@ -18,6 +18,7 @@ from rest_framework.views import APIView
 
 from .models import Transaction
 from .serializers import InitiatePaymentSerializer, TransactionSerializer
+from core.throttles import PartnerRateThrottle
 from .services import (
     PaymentError,
     SignatureVerificationError,
@@ -47,6 +48,7 @@ class InitiatePaymentView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
+    throttle_classes = [PartnerRateThrottle]
 
     def post(self, request: Request) -> Response:
         serializer = InitiatePaymentSerializer(
@@ -92,6 +94,7 @@ class PaymentCallbackView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request: Request) -> Response:
         reference = request.query_params.get('ref')
@@ -164,6 +167,7 @@ class PaymentWebhookView(APIView):
 
     permission_classes = []
     authentication_classes = []
+    throttle_classes = [PartnerRateThrottle]
 
     def post(self, request: Request) -> Response:
         signature = request.headers.get('x-interswitch-signature', '')
