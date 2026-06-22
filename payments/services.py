@@ -14,7 +14,6 @@ from decimal import Decimal
 import requests
 from django.conf import settings
 from django.db import transaction as db_transaction
-from django.utils import timezone
 
 from .models import CallbackLog, Transaction
 
@@ -96,6 +95,9 @@ def initiate_payment(transaction: Transaction) -> dict:
     payment URL that the frontend should redirect the user to.
     """
     
+    user = transaction.initiated_by
+    customer_name = f"{user.first_name} {user.last_name}".strip()
+    
     payload = {
         "merchantCode": settings.INTERSWITCH_MERCHANT_CODE,
         "payableCode": settings.INTERSWITCH_PAYABLE_CODE,
@@ -103,7 +105,7 @@ def initiate_payment(transaction: Transaction) -> dict:
         "transactionReference": transaction.reference,
         "currencyCode": "566",  # NGN ISO 4217 numeric
         "customerEmail": transaction.initiated_by.email,
-        "customerName": transaction.initiated_by.get_full_name(),
+        "customerName": customer_name,
         "redirectUrl": _build_redirect_url(transaction),
         "displayName": "TheeInsurance Portal",
     }
@@ -250,16 +252,16 @@ def _activate_subscription(txn: Transaction) -> None:
     Activate or renew the PolicySubscription linked to a successful transaction.
     Import is local to avoid circular imports with the subscriptions app.
     """
-    from subscriptions.models import PolicySubscription  # local import
 
     try:
         sub = txn.subscription
-        sub.status = PolicySubscription.Status.ACTIVE  # adjust to your actual field/choice
-        sub.activated_at = timezone.now()
-        sub.save(update_fields=["status", "activated_at", "updated_at"])
+        sub.status = 'active'
+        sub.payment_verified = True
+        sub.payment_reference = txn.gateway_reference or txn.reference
+        sub.save(update_fields=["status", "payment_verified", "payment_reference", "updated_at"])
         logger.info("Subscription %s activated for txn %s", sub.id, txn.reference)
+
     except Exception as e:
-        # Log but don't raise — transaction is already committed
         logger.error("Failed to activate subscription for txn %s: %s", txn.reference, str(e))
 
 
@@ -273,7 +275,7 @@ def _fire_n8n_webhook(txn: Transaction) -> None:
     payload = {
         "event": "payment.successful",
         "transaction_reference": txn.reference,
-        "subscription_id": str(txn.subscription_id),
+        "subscription_id": str(txn.subscription.id),
         "amount": str(txn.amount),
         "currency": txn.currency,
         "initiated_by": txn.initiated_by.email if txn.initiated_by else None,

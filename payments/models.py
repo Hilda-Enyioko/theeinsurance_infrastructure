@@ -169,7 +169,7 @@ class CallbackLog(models.Model):
         blank=True,
         related_name='callback_logs',
     )
-    
+
     is_duplicate: models.BooleanField = models.BooleanField(
         default=False,
         db_index=True

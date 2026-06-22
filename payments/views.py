@@ -8,6 +8,7 @@ Three endpoints covering the full Quickteller Pay redirect lifecycle:
 """
 
 import logging
+import json
 
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -17,6 +18,7 @@ from rest_framework.views import APIView
 
 from .models import Transaction
 from .serializers import InitiatePaymentSerializer, TransactionSerializer
+from core.throttles import PartnerRateThrottle
 from .services import (
     PaymentError,
     SignatureVerificationError,
@@ -46,6 +48,7 @@ class InitiatePaymentView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
+    throttle_classes = [PartnerRateThrottle]
 
     def post(self, request: Request) -> Response:
         serializer = InitiatePaymentSerializer(
@@ -91,6 +94,7 @@ class PaymentCallbackView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
+    throttle_classes = [PartnerRateThrottle]
 
     def get(self, request: Request) -> Response:
         reference = request.query_params.get('ref')
@@ -163,6 +167,7 @@ class PaymentWebhookView(APIView):
 
     permission_classes = []
     authentication_classes = []
+    throttle_classes = [PartnerRateThrottle]
 
     def post(self, request: Request) -> Response:
         signature = request.headers.get('x-interswitch-signature', '')
@@ -174,10 +179,20 @@ class PaymentWebhookView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        raw_body = request.body
+
+        try:
+            payload = json.loads(raw_body)
+        except json.JSONDecodeError:
+            return Response(
+                {"detail": "Invalid JSON."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         try:
             process_webhook(
-                payload=request.data,
-                raw_body=request.body,
+                payload=payload,
+                raw_body=raw_body,
                 signature=signature,
             )
         except SignatureVerificationError:
