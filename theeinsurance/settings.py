@@ -45,6 +45,8 @@ INSTALLED_APPS = [
     # third party apps
     'rest_framework',
     'corsheaders',
+    'drf_spectacular',
+    'drf_spectacular_sidecar',
 
     # local apps
     'accounts',
@@ -150,7 +152,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "auth": "10/hour",
         "partner": "1000/hour",
-    }
+    },
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema'
 }
 
 # Simple JWT configuration
@@ -202,3 +205,28 @@ INTERSWITCH_MERCHANT_CODE = config("INTERSWITCH_MERCHANT_CODE")
 INTERSWITCH_PAYABLE_CODE = config("INTERSWITCH_PAYABLE_CODE")
 INTERSWITCH_REDIRECT_URL = config("INTERSWITCH_REDIRECT_URL")
 N8N_WEBHOOK_URL = config("N8N_WEBHOOK_URL")
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'TheeInsurance API',
+    'DESCRIPTION': (
+        'A headless, API-first insurance distribution platform. '
+        'Companies integrate TheeInsurance into their products via API '
+        'and offer insurance plans to their customers without building '
+        'the insurance layer themselves.'
+    ),
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'SWAGGER_UI_DIST': 'SIDECAR',
+    'SWAGGER_UI_FAVICON_HREF': 'SIDECAR',
+    'REDOC_DIST': 'SIDECAR',
+    "SECURITY": [{"jwtAuth": []}],
+    "SECURITY_DEFINITIONS": {
+        "jwtAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+        }
+    },
+    "OPERATION_ID_NAMING_STRATEGY": "operation_id",
+    "SCHEMA_PATH_PREFIX": r"/api/v[0-9]",
+}
