@@ -18,7 +18,6 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
-from django.urls import path, include
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularSwaggerView,
@@ -26,17 +25,29 @@ from drf_spectacular.views import (
 )
 
 urlpatterns = [
+    # Core Admin
     path('admin/', admin.site.urls),
+    
+    # Core API Resources (v1)
     path('api/v1/', include('accounts.urls')),
     path('api/v1/', include('plans.urls')),
     path('api/v1/', include('subscriptions.urls')),
-    path('api/v1/partner/', include('analytics.urls')),
-    path('api/v1/partner/', include('webhooks.urls')),
-    path("api/v1/", include("claims.urls")),
-    path('payments/', include('payments.urls', namespace='payments')),
+    path('api/v1/', include('claims.urls')),
+    path('api/v1/payments/', include(('payments.urls', 'payments'), namespace='payments')),
     
-    # Swagger & Schema Endpoints
+    # Partner API Resources (v1)
+    path('api/v1/partner/', include(('analytics.urls', 'analytics'), namespace='partner-analytics')),
+    # path('api/v1/partner/', include(('webhooks.urls', 'webhooks'), namespace='partner-webhooks')),
+    
+    # N8N API Resources
+    path('api/v1/webhooks/', include(('webhooks.urls', 'webhooks'), namespace='register-n8n-webhooks')),
+    
+    # OpenAPI Schema & Documentation Engine
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
-] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+]
+
+# Serve Media Assets locally during development
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

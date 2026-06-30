@@ -1,14 +1,8 @@
-import hmac
-import hashlib
-import json
-import uuid
-import requests
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.utils import timezone
-
-from core.models import Webhook, WebhookEvent
+from accounts.permissions import IsServiceAccount
+from core.models import Webhook, WebhookEvent, ServiceWebhookEndpoint
 
 
 # Base: resolve partner from authenticated user
@@ -148,38 +142,58 @@ class WebhookDetailView(APIView):
         return Response({"message": "Webhook deleted successfully."}, status=204)
 
 
-# ─── Webhook Dispatch ─────────────────────────────────────────────────────────
+class ServiceWebhookRegisterView(APIView):
+    """
+    GET/POST /webhooks/register/
 
-def dispatch_webhook(partner, event_type, payload):
-    webhooks = Webhook.objects.filter(
-        partner=partner,
-        is_active=True,
-        events__event=event_type,
-    )
+    Lets a service account (n8n) register or update the callback URLs it
+    wants theeinsurance to call for payment lifecycle events.
+    n8n can update these itself without a redeploy.
 
-    for webhook in webhooks:
-        payload_bytes = json.dumps(payload).encode("utf-8")
-
-        # sign payload with webhook secret
-        signature = hmac.new(
-            webhook.secret.encode("utf-8"),
-            payload_bytes,
-            hashlib.sha256,
-        ).hexdigest()
-
-        headers = {
-            "Content-Type": "application/json",
-            "X-TheeInsurance-Signature": signature,
-            "X-TheeInsurance-Event": event_type,
+    POST body:
+        {
+          "webhooks": [
+            {"event": "payment.successful", "url": "https://n8n.internal/webhook/payment-success"},
+            {"event": "charge.failed", "url": "https://n8n.internal/webhook/charge-failed"}
+          ]
         }
+    """
+    permission_classes = [IsServiceAccount]
 
-        try:
-            requests.post(
-                webhook.url,
-                data=payload_bytes,
-                headers=headers,
-                timeout=10,
+    def get(self, request):
+        endpoints = ServiceWebhookEndpoint.objects.filter(service_account=request.user)
+        return Response({
+            "webhooks": [
+                {"event": e.event, "url": e.url, "is_active": e.is_active}
+                for e in endpoints
+            ]
+        })
+
+    def post(self, request):
+        registrations = request.data.get("webhooks", [])
+        if not registrations:
+            return Response({"error": "At least one webhook registration is required."}, status=400)
+
+        valid_events = [c[0] for c in ServiceWebhookEndpoint.EVENT_CHOICES]
+        result = []
+
+        for reg in registrations:
+            event = reg.get("event")
+            url = reg.get("url")
+
+            if event not in valid_events:
+                return Response(
+                    {"error": f"Invalid event '{event}'. Valid options: {valid_events}"},
+                    status=400,
+                )
+            if not url:
+                return Response({"error": f"Missing url for event '{event}'."}, status=400)
+
+            obj, _ = ServiceWebhookEndpoint.objects.update_or_create(
+                service_account=request.user,
+                event=event,
+                defaults={"url": url, "is_active": True},
             )
-        except requests.exceptions.RequestException:
-            # silently fail for now — delivery logging comes later
-            pass
+            result.append({"event": obj.event, "url": obj.url})
+
+        return Response({"message": "Webhooks registered.", "webhooks": result}, status=201)

@@ -8,6 +8,8 @@ This module provides Django REST Framework (DRF) API endpoints handling:
 - High-level administrative operations by internal TheeInsurance staff.
 """
 
+import secrets
+from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
@@ -18,9 +20,9 @@ from django.utils import timezone
 
 from accounts.permissions import IsSuperAdmin, IsPartnerAdmin, IsCustomer
 from core.throttles import IPRateThrottle, PartnerRateThrottle
-from .models import PartnerKYC, CustomerProfile
+from .models import CustomUser, PartnerKYC, CustomerProfile, ServiceAccountCredential
 from core.models import Partner
-from webhooks.views import dispatch_webhook
+from webhooks.services import dispatch_webhook
 
 from .serializers import (
     CustomerRegistrationSerializer,
@@ -336,23 +338,38 @@ class StaffLoginView(APIView):
         })
 
 
-# Staff — Partner KYC Review
-
 class StaffPartnerKYCReviewView(APIView):
     """
     TheeInsurance staff list and review partner KYC submissions.
-    PartnerRateThrottle: staff actions are still tenant-scoped operations.
     """
     permission_classes = [IsSuperAdmin]
     throttle_classes = [PartnerRateThrottle]
 
-    def get(self, request):
+    def get(self, request, partner_id=None):
         """
-        Allows internal staff members to query incoming organizational applications
+        Allows internal staff members to query incoming organizational applications.
+        Handles both full lists and singular lookups based on partner_id.
         """
+        # Handle individual detail lookup
+        if partner_id:
+            try:
+                k = PartnerKYC.objects.select_related('partner').get(partner__id=partner_id)
+                data = {
+                    "partner_id": str(k.partner.id),
+                    "partner_name": k.partner.name,
+                    "partner_type": k.partner.partner_type,
+                    "rc_number": k.rc_number,
+                    "status": k.status,
+                    "submitted_at": k.submitted_at,
+                    "review_note": getattr(k, 'review_note', ''),
+                }
+                return Response({"kyc_submission": data})
+            except PartnerKYC.DoesNotExist:
+                return Response({"error": "KYC submission not found for this partner."}, status=404)
 
+        # Handle List lookup (Fallback when partner_id is None)
         status_filter = request.query_params.get("status", "pending")
-        kyc_list = PartnerKYC.objects.filter(status=status_filter)
+        kyc_list = PartnerKYC.objects.filter(status=status_filter).select_related('partner')
 
         data = [
             {
@@ -373,7 +390,6 @@ class StaffPartnerKYCReviewView(APIView):
         Issue state confirmations (approve/reject), 
         record notes, and toggle partner operational states.
         """
-        
         try:
             kyc = PartnerKYC.objects.get(partner__id=partner_id)
         except PartnerKYC.DoesNotExist:
@@ -415,7 +431,6 @@ class StaffPartnerKYCReviewView(APIView):
             "partner": kyc.partner.name,
             "is_active": kyc.partner.is_active,
         })
-
 
 # Staff — Distributor Provider Access
 
@@ -490,3 +505,158 @@ class StaffDistributorAccessView(APIView):
             return Response({"message": "Access revoked."})
         except DistributorProviderAccess.DoesNotExist:
             return Response({"error": "Access record not found."}, status=404)
+
+
+class StaffServiceAccountCreateView(APIView):
+    """
+    Staff-only endpoint to provision a service account (e.g. for n8n).
+
+    The raw client_secret is returned ONLY in this response. It is never
+    stored in plaintext and cannot be retrieved again — if it's lost, the
+    credential must be revoked and a new one issued.
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request):
+        name = request.data.get("name", "").strip()
+        if not name:
+            return Response(
+                {"detail": "A 'name' is required, e.g. 'n8n automation'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        slug = name.lower().replace(" ", "-")
+        email = f"svc-{slug}@internal.theeinsurance.local"
+
+        if CustomUser.objects.filter(email=email).exists():
+            return Response(
+                {"detail": f"A service account named '{name}' already exists."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        user = CustomUser.objects.create_user(
+            email=email,
+            password=None,
+            role="service_account",
+            first_name=name,
+            last_name="Service Account",
+        )
+        user.set_unusable_password()
+        user.save()
+
+        cred = ServiceAccountCredential(user=user, name=name)
+        raw_secret = secrets.token_urlsafe(32)
+        cred.set_secret(raw_secret)
+        cred.save()
+
+        return Response(
+            {
+                "client_id": cred.client_id,
+                "client_secret": raw_secret,  # shown once — copy it now
+                "name": cred.name,
+                "warning": "This secret will not be shown again. Store it securely.",
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class StaffServiceAccountListView(APIView):
+    """
+    Staff-only. Lists all service account credentials for audit purposes.
+    Never returns the secret — only client_id, name, status, and usage.
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        creds = ServiceAccountCredential.objects.select_related("user").order_by("-created_at")
+        data = [
+            {
+                "client_id": c.client_id,
+                "name": c.name,
+                "is_active": c.is_active,
+                "created_at": c.created_at,
+                "last_used_at": c.last_used_at,
+                "email": c.user.email,
+            }
+            for c in creds
+        ]
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class StaffServiceAccountRevokeView(APIView):
+    """
+    Staff-only. Deactivates a service account credential (does not delete it,
+    preserving audit history). The associated CustomUser is also disabled
+    so it can't authenticate by any path.
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request, client_id):
+        try:
+            cred = ServiceAccountCredential.objects.select_related("user").get(client_id=client_id)
+        except ServiceAccountCredential.DoesNotExist:
+            return Response({"detail": "Service account not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        cred.is_active = False
+        cred.save(update_fields=["is_active"])
+
+        cred.user.is_active = False
+        cred.user.save(update_fields=["is_active"])
+
+        return Response({"detail": f"Service account '{cred.name}' revoked."}, status=status.HTTP_200_OK)
+
+
+class ServiceAccountTokenView(APIView):
+    """
+    POST /auth/service-account/token/
+
+    Client-credentials style token exchange for service accounts (n8n,
+    schedulers). No user JWT involved — caller authenticates with a
+    client_id/client_secret pair issued once, out-of-band, by staff.
+
+    Request body:
+        client_id (str)
+        client_secret (str)
+
+    Response:
+        200: { access, refresh, expires_in }
+        401: Invalid credentials
+    """
+    permission_classes = []
+    authentication_classes = []
+
+    def post(self, request):
+        client_id = request.data.get("client_id")
+        client_secret = request.data.get("client_secret")
+
+        if not client_id or not client_secret:
+            return Response(
+                {"error": "client_id and client_secret are required."}, status=400
+            )
+
+        try:
+            cred = ServiceAccountCredential.objects.select_related("user").get(
+                client_id=client_id, is_active=True
+            )
+        except ServiceAccountCredential.DoesNotExist:
+            return Response({"error": "Invalid credentials."}, status=401)
+
+        if not cred.check_secret(client_secret):
+            return Response({"error": "Invalid credentials."}, status=401)
+
+        if not cred.user.is_active:
+            return Response({"error": "Service account is inactive."}, status=401)
+
+        cred.last_used_at = timezone.now()
+        cred.save(update_fields=["last_used_at"])
+
+        refresh = RefreshToken.for_user(cred.user)
+        refresh["role"] = cred.user.role
+        refresh["service_account"] = True
+        access = refresh.access_token
+
+        return Response({
+            "access": str(access),
+            "refresh": str(refresh),
+            "expires_in": int(access.lifetime.total_seconds()),
+        }, status=200)

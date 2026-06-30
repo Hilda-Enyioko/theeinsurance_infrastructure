@@ -46,6 +46,10 @@ class Transaction(models.Model):
         
         NEW_SUBSCRIPTION = 'NEW_SUBSCRIPTION', _('New Subscription')
         RENEWAL = 'RENEWAL', _('Renewal')
+    
+    class GATEWAY(models.TextChoices):
+        INTERSWITCH = 'INTERSWITCH', _('Interswitch')
+        NOMBA       = 'NOMBA',       _('Nomba')
 
     id: models.UUIDField = models.UUIDField(
         primary_key=True, 
@@ -95,6 +99,11 @@ class Transaction(models.Model):
         default=PAYMENT_STATUS.PENDING,
     )
     
+    gateway: models.CharField = models.CharField(
+        max_length=20,
+        choices=GATEWAY.choices
+    )
+    
     gateway_reference: models.CharField = models.CharField(
         max_length=100,
         null=True,
@@ -137,6 +146,10 @@ class CallbackLog(models.Model):
         FAILED = 'FAILED', _('Failed')
         FLAGGED = 'FLAGGED', _('Flagged')
 
+    class Gateway(models.TextChoices):
+        INTERSWITCH = 'INTERSWITCH', _('Interswitch')
+        NOMBA       = 'NOMBA',       _('Nomba')
+
     uuid: models.UUIDField = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -168,6 +181,12 @@ class CallbackLog(models.Model):
         null=True,
         blank=True,
         related_name='callback_logs',
+    )
+
+    gateway: models.CharField = models.CharField(
+        max_length=20,
+        choices=Gateway.choices,
+        db_index=True
     )
 
     is_duplicate: models.BooleanField = models.BooleanField(
