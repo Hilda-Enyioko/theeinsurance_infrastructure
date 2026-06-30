@@ -15,8 +15,8 @@ from .views import (
   InterswitchWebhookView,
   NombaCheckoutView,
   NombaWebhookView,
-  # NombaRenewalChargeView,
-  # DunningFinalFailureView,
+  NombaRenewalChargeView,
+  DunningFinalFailureView,
 )
 
 app_name = 'payments'
@@ -30,4 +30,6 @@ urlpatterns = [
   # Nomba Payment Endpoints
   path('nomba/checkout/', NombaCheckoutView.as_view(), name='nomba-checkout'),
   path('nomba/webhook/', NombaWebhookView.as_view(), name='nomba-webhook'),
+  path('nomba/renewal/charge/', NombaRenewalChargeView.as_view(), name='nomba-renewal-charge'),
+  path("dunning/final-failure/", DunningFinalFailureView.as_view(), name="dunning-final-failure"),
 ]

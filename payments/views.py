@@ -15,11 +15,14 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 
 from .models import Transaction
 from .serializers import InitiatePaymentSerializer, TransactionSerializer
 from core.throttles import PartnerRateThrottle
+from accounts.permissions import IsServiceAccount
+from webhooks.services import dispatch_webhook
 from .services import (
     PaymentError,
     SignatureVerificationError,
@@ -28,6 +31,7 @@ from .services import (
     process_nomba_webhook,
     verify_transaction,
     initiate_nomba_checkout,
+    charge_policy_renewal,
 )
 
 logger = logging.getLogger(__name__)
@@ -387,4 +391,169 @@ class NombaWebhookView(APIView):
             logger.error("Unexpected error processing Nomba webhook: %s", str(e))
 
         return Response({"detail": "Received."}, status=status.HTTP_200_OK)
+
+
+class NombaRenewalChargeView(APIView):
+    """
+    POST /payments/nomba/renewal/charge/
+
+    Triggers an auto-renewal charge for a subscription using its stored
+    Nomba tokenized card. Called by:
+      - n8n on scheduled renewal dates (via service account JWT)
+      - n8n dunning retries on day 1, 3, 7 after charge failure
+      - Internal scheduler (management command)
+
+    Request body:
+      { "subscription_id": "<uuid>" }
+
+    Response:
+      {
+        "outcome":         "success" | "failed",
+        "transaction_ref": "TII-XXXXXXXX",
+        "subscription_id": "<uuid>",
+        "amount":          "5000.00"          (on success)
+        "failure_reason":  "declined"         (on failure)
+      }
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes   = [PartnerRateThrottle]
+
+    @extend_schema(
+        summary="Trigger auto-renewal charge",
+        description=(
+            "Charges a subscription renewal using its stored Nomba tokenized card. "
+            "Called by n8n on renewal dates and dunning retries (day 1, 3, 7). "
+            "Requires service account JWT."
+        ),
+        request={
+            "application/json": {
+                "type": "object",
+                "required": ["subscription_id"],
+                "properties": {
+                    "subscription_id": {
+                        "type": "string",
+                        "format": "uuid",
+                    },
+                },
+            }
+        },
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "outcome":         {"type": "string", "enum": ["success", "failed"]},
+                    "transaction_ref": {"type": "string"},
+                    "subscription_id": {"type": "string"},
+                    "amount":          {"type": "string"},
+                    "failure_reason":  {"type": "string"},
+                },
+            },
+            400: {"description": "Missing or invalid subscription_id, or business rule violation."},
+        },
+        tags=["Payments"],
+        auth=["jwtAuth"],
+    )
+    def post(self, request: Request) -> Response:
+        subscription_id = request.data.get("subscription_id")
+
+        if not subscription_id:
+            return Response(
+                {"error": "subscription_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = charge_policy_renewal(subscription_id)
+            return Response(result, status=status.HTTP_200_OK)
+        except PaymentError as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as e:
+            logger.error("Unexpected error in NombaRenewalChargeView: %s", str(e))
+            return Response(
+                {"error": "An unexpected error occurred."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class DunningFinalFailureView(APIView):
+    """
+    POST /payments/dunning/final-failure/
+
+    Called by n8n once the dunning schedule (day 1, 3, 7) is exhausted and
+    the subscription still hasn't recovered. Marks the subscription
+    cancelled and dispatches a subscription.cancelled webhook to the
+    partner so they can inform their customer through their own channel.
+
+    Request body:
+        subscription_id (UUID): required
+        transaction_ref (str):  the last failed renewal Transaction reference
+        reason (str):           optional, e.g. "dunning_exhausted"
+
+    Response:
+        200: { message, subscription_id }
+        400: Missing subscription_id
+        404: Subscription not found
+    """
+    permission_classes = [IsServiceAccount]
+
+    def post(self, request):
+        subscription_id = request.data.get("subscription_id")
+        transaction_ref = request.data.get("transaction_ref", "")
+        reason = request.data.get("reason", "dunning_exhausted")
+
+        if not subscription_id:
+            return Response({"error": "subscription_id is required."}, status=400)
+
+        from subscriptions.models import PolicySubscription
+
+        try:
+            sub = PolicySubscription.objects.select_related(
+                "customer", "plan", "customer__partner"
+            ).get(id=subscription_id)
+        except PolicySubscription.DoesNotExist:
+            return Response({"error": "Subscription not found."}, status=404)
+
+        # Idempotent — n8n may retry this call on network failure
+        if sub.status == "lapsed":
+            return Response(
+                {"message": "Subscription already lapsed.", "subscription_id": str(sub.id)},
+                status=200,
+            )
+
+        sub.status = "lapsed"
+        sub.auto_charge_enabled = False
+        sub.save(update_fields=["status", "auto_charge_enabled", "updated_at"])
+
+        logger.info(
+            "Subscription %s lapsed after dunning exhausted (txn=%s, reason=%s)",
+            sub.id, transaction_ref, reason,
+        )
+
+        partner = getattr(sub.customer, "partner", None)
+        if partner:
+            dispatch_webhook(
+                partner=partner,
+                event_type="subscription.lapsed",
+                payload={
+                    "event": "subscription.lapsed",
+                    "subscription_id": str(sub.id),
+                    "customer_email": sub.customer.user.email,
+                    "transaction_reference": transaction_ref,
+                    "reason": reason,
+                    "cancelled_at": timezone.now().isoformat(),
+                },
+            )
+        else:
+            logger.warning(
+                "No partner found for subscription %s — could not dispatch subscription lapsed notification.",
+                sub.id,
+            )
+
+        return Response({
+            "message": "Subscription lapsed and partner notified.",
+            "subscription_id": str(sub.id),
+        }, status=200)
 
