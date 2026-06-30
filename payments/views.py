@@ -24,7 +24,8 @@ from .services import (
     PaymentError,
     SignatureVerificationError,
     initiate_payment,
-    process_webhook,
+    process_interswitch_webhook,
+    process_nomba_webhook,
     verify_transaction,
     initiate_nomba_checkout,
 )
@@ -192,7 +193,7 @@ class InterswitchWebhookView(APIView):
             )
 
         try:
-            process_webhook(
+            process_interswitch_webhook(
                 payload=payload,
                 raw_body=raw_body,
                 signature=signature,
@@ -313,4 +314,77 @@ class NombaCheckoutView(APIView):
                 {"error": "An unexpected error occurred."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
+class NombaWebhookView(APIView):
+    """
+    POST /payments/nomba/webhook/
+
+    Nomba server-to-server callback after checkout completion.
+    No authentication required — Nomba won't send a JWT.
+    Signature verification is mandatory and happens inside
+    process_nomba_webhook().
+
+    Nomba signs using a composite string (not raw body). The timestamp
+    header is extracted here and injected into the payload dict before
+    passing to the service, so the service has everything it needs for
+    verification without an extra function parameter.
+
+    Headers:
+        nomba-signature:  HMAC-SHA256 base64 of composite string
+        nomba-timestamp:  timestamp string used in signature construction
+
+    Response:
+        200: Always — outcome is logged, not surfaced to Nomba
+    """
+
+    permission_classes     = []
+    authentication_classes = []
+    throttle_classes       = [PartnerRateThrottle]
+
+    def post(self, request: Request) -> Response:
+        signature = request.headers.get("nomba-signature", "")
+        timestamp = request.headers.get("nomba-timestamp", "")
+
+        if not signature:
+            logger.warning("Nomba webhook received with no signature header.")
+            return Response(
+                {"detail": "Missing signature."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not timestamp:
+            logger.warning("Nomba webhook received with no timestamp header.")
+            return Response(
+                {"detail": "Missing timestamp."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payload = json.loads(request.body)
+        except json.JSONDecodeError:
+            return Response(
+                {"detail": "Invalid JSON."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Inject timestamp so the service can build the composite
+        # signature string without needing a separate parameter
+        payload["_nomba_timestamp"] = timestamp
+
+        try:
+            process_nomba_webhook(
+                payload=payload,
+                signature=signature,
+            )
+        except SignatureVerificationError:
+            logger.warning("Nomba webhook rejected — invalid signature.")
+            return Response(
+                {"detail": "Invalid signature."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        except Exception as e:
+            logger.error("Unexpected error processing Nomba webhook: %s", str(e))
+
+        return Response({"detail": "Received."}, status=status.HTTP_200_OK)
 
