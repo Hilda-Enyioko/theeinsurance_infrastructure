@@ -8,7 +8,7 @@ from .serializers import PolicySubscriptionSerializer, PolicySubscriptionCreateS
 from accounts.models import CustomerProfile
 from accounts.permissions import IsCustomer, IsPartnerAdmin
 from plans.models import DistributorProviderAccess
-from webhooks.views import dispatch_webhook
+from webhooks.services import dispatch_webhook
 from core.throttles import PartnerRateThrottle
 
 

@@ -1,6 +1,6 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from webhooks.views import dispatch_webhook
+from webhooks.services import dispatch_webhook
 from accounts.permissions import IsSuperAdmin, IsProviderAdmin, IsCustomer
 
 from .models import Claim, ClaimDocument, REQUIRED_CLAIM_DOCUMENTS
