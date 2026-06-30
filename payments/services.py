@@ -8,15 +8,18 @@ All views should remain thin and delegate to this module.
 
 import hashlib
 import hmac
+import base64
 import logging
 from decimal import Decimal
 
 import requests
 from django.conf import settings
 from django.db import transaction as db_transaction
+from django.utils import timezone
 
 from .models import CallbackLog, Transaction
 from core.nomba_auth import get_nomba_token, NombaAuthError    # noqa: E402
+from subscriptions.models import NombaTokenStore
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +71,7 @@ def _build_redirect_url(transaction: Transaction) -> str:
 
 # Signature verification
 # ---------------------------------------------------------------------------------------
-def verify_webhook_signature(payload_bytes: bytes, signature_header: str) -> bool:
+def verify_interswitch_signature(payload_bytes: bytes, signature_header: str) -> bool:
     """
     Verify that an incoming webhook was genuinely sent by Interswitch.
     Interswitch signs the raw request body with HMAC-SHA512 using your
@@ -88,10 +91,139 @@ def verify_webhook_signature(payload_bytes: bytes, signature_header: str) -> boo
 
     return True
 
+def verify_nomba_signature(payload: dict, timestamp: str, signature_header: str) -> bool:
+    """
+    Verify that an incoming webhook was genuinely sent by Nomba.
+
+    Unlike Interswitch, Nomba does not sign the raw request body. It builds
+    a colon-delimited string from specific payload fields plus the
+    `nomba-timestamp` header value, HMAC-SHA256's that string with your
+    signature key, and base64-encodes the digest. Compare against the
+    `nomba-signature` header.
+    """
+    data = payload.get("data", {})
+    merchant = data.get("merchant", {})
+    transaction = data.get("transaction", {})
+
+    response_code = transaction.get("responseCode", "")
+    if response_code == "null":
+        response_code = ""
+
+    hashing_payload = ":".join([
+        payload.get("event_type", ""),
+        payload.get("requestId", ""),
+        merchant.get("userId", ""),
+        merchant.get("walletId", ""),
+        transaction.get("transactionId", ""),
+        transaction.get("type", ""),
+        transaction.get("time", ""),
+        response_code,
+        timestamp,
+    ])
+
+    mac = hmac.HMAC(
+        key=settings.NOMBA_SIGNATURE_KEY.encode(),
+        msg=hashing_payload.encode(),
+        digestmod=hashlib.sha256,
+    )
+    expected = base64.b64encode(mac.digest()).decode()
+
+    if not hmac.compare_digest(expected, signature_header):
+        raise SignatureVerificationError(
+            "Webhook signature mismatch — possible spoofed request."
+        )
+
+    return True
+
 # ----------------------------------------------------------------------------------------
 
+
+# Store Tokenised Cards
+# -----------------------------------------------------------------------------------
+def _store_nomba_token(txn: Transaction, token_key: str) -> NombaTokenStore | None:
+    """
+    Persist Nomba card tokenization details for recurring charges.
+    
+    Validates that the customer explicitly consented to recurring charges 
+    via the associated PolicySubscription before saving to the database.
+    """
+    try:
+        sub = txn.subscription
+    except AttributeError:
+        logger.error("Transaction %s is not linked to a subscription.", txn.reference)
+        return None
+
+    # Consent check
+    if not sub.auto_charge_enabled:
+        logger.warning(
+            "Nomba token key received for transaction %s, but subscription %s "
+            "does not have auto-charge enabled. Token discarded.",
+            txn.reference, sub.id
+        )
+        return None
+
+    # Parse details out of the saved gateway payload safely if available
+    gateway_response = txn.gateway_response or {}
+    response_data = gateway_response.get("data", {})
+    transaction_data = response_data.get("transaction", {})
+
+    card_type = response_data.get("cardType") or transaction_data.get("cardType", "")
+    card_pan = response_data.get("bin") or transaction_data.get("pan", "")
+
+    # Create or update the token storage record
+    token_record, created = NombaTokenStore.objects.update_or_create(
+        policy=sub,
+        defaults={
+            "token_key": token_key,
+            "card_type": card_type,
+            "card_pan": card_pan,
+            "customer_consented_to_auto_charge": True,
+            "consent_recorded_at": sub.updated_at or timezone.now(),
+            "nomba_order_reference": txn.gateway_reference or "",
+        }
+    )
+
+    logger.info(
+        "Successfully stored Nomba token for subscription %s (Created: %s)",
+        sub.id, created
+    )
+    return token_record
+# -----------------------------------------------------------------------------------
+
+
+# Process Success Payments
+# -----------------------------------------------------------------------------------
+def _process_successful_payment(txn, gateway_ref, payload, gateway):
+    txn.payment_status = Transaction.PAYMENT_STATUS.SUCCESSFUL
+    txn.gateway_reference = gateway_ref
+    txn.gateway_response = payload
+    txn.save(update_fields=[
+        "payment_status",
+        "gateway_reference",
+        "gateway_response",
+        "updated_at"
+    ])
+
+    _activate_subscription(txn)
+
+    log = CallbackLog.objects.create(
+        transaction_reference=txn.reference,
+        raw_payload=payload,
+        response_code=payload.get("responseCode", ""),
+        status=CallbackLog.Status.SUCCESS,
+        transaction=txn,
+        gateway=gateway,
+        is_duplicate=False,
+        is_amount_mismatch=False,
+    )
+
+    db_transaction.on_commit(lambda: _fire_n8n_payment_webhook(txn))
+
+    return log
+# --------------------------------------------------------------------------------------
+
 # Initiate Payment and Checkout
-# ----------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------
 def initiate_payment(transaction: Transaction) -> dict:
     """
     Initiate a Quickteller Pay redirect session for a given Transaction.
@@ -285,91 +417,163 @@ def verify_transaction(reference: str) -> dict:
         raise PaymentError("Could not verify transaction with gateway.")
 
 
-def process_webhook(payload: dict, raw_body: bytes, signature: str) -> CallbackLog:
+# Webhook Processing Functions
+# --------------------------------------------------------------------------------------
+def process_interswitch_webhook(payload: dict, raw_body: bytes, signature: str) -> CallbackLog:
     """
-    Process an incoming Interswitch webhook callback.
+    Process an incoming Interswitch Transaction webhook callback.
 
     Verifies the signature, checks for duplicates, validates the amount,
-    updates Transaction and Subscription status, and creates an immutable
-    CallbackLog — all within a single atomic transaction.
+    and — on a clean success — delegates to _process_successful_payment.
+    Non-success / duplicate / mismatched callbacks are still logged for
+    audit purposes but don't touch the Transaction or fire n8n.
     """
-    # 1. Verify signature first — reject spoofed requests immediately
-    verify_webhook_signature(raw_body, signature)
+    verify_interswitch_signature(raw_body, signature)
 
     transaction_ref = payload.get("transactionReference", "")
     response_code = payload.get("responseCode", "")
     gateway_ref = payload.get("retrievalReferenceNumber", "")
-
     is_success = response_code == "00"  # Interswitch success code
 
     with db_transaction.atomic():
-        # 2. Fetch the internal transaction
         try:
             txn = Transaction.objects.select_for_update().get(reference=transaction_ref)
         except Transaction.DoesNotExist:
-            logger.warning("Webhook received for unknown reference: %s", transaction_ref)
+            logger.warning("Interswitch webhook received for unknown reference: %s", transaction_ref)
             return CallbackLog.objects.create(
                 transaction_reference=transaction_ref,
                 raw_payload=payload,
                 response_code=response_code,
                 status=CallbackLog.Status.FLAGGED,
                 transaction=None,
+                gateway="interswitch",
                 is_duplicate=False,
                 is_amount_mismatch=False,
             )
 
-        # 3. Idempotency — reject duplicates
         is_duplicate = txn.payment_status != Transaction.PAYMENT_STATUS.PENDING
-        
-        # 4. Amount validation
-        incoming_amount = Decimal(payload.get("amount", 0)) / 100  # kobo → naira
+
+        incoming_amount = Decimal(str(payload.get("amount", 0))) / 100
         is_amount_mismatch = incoming_amount != txn.amount
 
-        # 5. Determine callback log status
-        if is_duplicate:
-            log_status = CallbackLog.Status.FLAGGED
-        elif is_amount_mismatch:
-            log_status = CallbackLog.Status.FLAGGED
-        elif is_success:
-            log_status = CallbackLog.Status.SUCCESS
-        else:
-            log_status = CallbackLog.Status.FAILED
-
-        # 6. Update transaction only if it's still PENDING and amounts match
-        if not is_duplicate and not is_amount_mismatch:
-            txn.payment_status = (
-                Transaction.PAYMENT_STATUS.SUCCESSFUL
-                if is_success
-                else Transaction.PAYMENT_STATUS.FAILED
+        if is_duplicate or is_amount_mismatch:
+            return CallbackLog.objects.create(
+                transaction_reference=transaction_ref,
+                raw_payload=payload,
+                response_code=response_code,
+                status=CallbackLog.Status.FLAGGED,
+                transaction=txn,
+                gateway="interswitch",
+                is_duplicate=is_duplicate,
+                is_amount_mismatch=is_amount_mismatch,
             )
-            txn.gateway_reference = gateway_ref
-            txn.gateway_response = payload
-            txn.save(update_fields=["payment_status", "gateway_reference", "gateway_response", "updated_at"])
 
-            # 7. Update subscription status on success
-            if is_success:
-                _activate_subscription(txn)
+        if is_success:
+            return _process_successful_payment(txn, gateway_ref, payload, gateway="interswitch")
 
-        # 8. Create immutable audit log
-        log = CallbackLog.objects.create(
+        # Clean failure — not a duplicate, not a mismatch, just declined
+        txn.payment_status = Transaction.PAYMENT_STATUS.FAILED
+        txn.gateway_reference = gateway_ref
+        txn.gateway_response = payload
+        txn.save(update_fields=["payment_status", "gateway_reference", "gateway_response", "updated_at"])
+
+        return CallbackLog.objects.create(
             transaction_reference=transaction_ref,
             raw_payload=payload,
             response_code=response_code,
-            status=log_status,
+            status=CallbackLog.Status.FAILED,
             transaction=txn,
-            is_duplicate=is_duplicate,
-            is_amount_mismatch=is_amount_mismatch,
+            gateway="interswitch",
+            is_duplicate=False,
+            is_amount_mismatch=False,
         )
 
-    # 9. Fire n8n webhook outside the atomic block — DB is committed by here
-    if is_success and not is_duplicate and not is_amount_mismatch:
-        _fire_n8n_webhook(txn)
 
-    return log
-# --------------------------------------------------------------------------------------
+def process_nomba_webhook(payload: dict, signature: str) -> CallbackLog:
+    """
+    Process an incoming Nomba Transaction webhook callback.
 
-# Side-effect helpers (called from process_webhook)
+    Verifies the signature (Nomba's composite-string HMAC, not raw body),
+    checks for duplicates, and — on success — delegates to
+    _process_successful_payment, then persists the Nomba tokenKey for
+    future automated charges.
 
+    Note: no amount-mismatch check here — Nomba's checkout flow doesn't
+    carry the same amount-tampering surface as Interswitch's redirect flow.
+    Revisit if that assumption changes.
+    """
+    timestamp = payload.get("_nomba_timestamp", "")  # passed in by the view from the header
+    verify_nomba_signature(payload, timestamp, signature)
+
+    data = payload.get("data", {})
+    transaction = data.get("transaction", {})
+
+    transaction_ref = transaction.get("merchantTxRef") or transaction.get("transactionId", "")
+    response_code = transaction.get("responseCode", "")
+    gateway_ref = transaction.get("transactionId", "")
+    is_success = payload.get("event_type") == "payment_success"
+
+    with db_transaction.atomic():
+        try:
+            txn = Transaction.objects.select_for_update().get(reference=transaction_ref)
+        except Transaction.DoesNotExist:
+            logger.warning("Nomba webhook received for unknown reference: %s", transaction_ref)
+            return CallbackLog.objects.create(
+                transaction_reference=transaction_ref,
+                raw_payload=payload,
+                response_code=response_code,
+                status=CallbackLog.Status.FLAGGED,
+                transaction=None,
+                gateway="nomba",
+                is_duplicate=False,
+                is_amount_mismatch=False,
+            )
+
+        is_duplicate = txn.payment_status != Transaction.PAYMENT_STATUS.PENDING
+
+        if is_duplicate:
+            return CallbackLog.objects.create(
+                transaction_reference=transaction_ref,
+                raw_payload=payload,
+                response_code=response_code,
+                status=CallbackLog.Status.FLAGGED,
+                transaction=txn,
+                gateway="nomba",
+                is_duplicate=True,
+                is_amount_mismatch=False,
+            )
+
+        if is_success:
+            log = _process_successful_payment(txn, gateway_ref, payload, gateway="nomba")
+
+            token_key = data.get("tokenKey") or transaction.get("tokenKey")
+            if token_key:
+                _store_nomba_token(txn, token_key)
+
+            return log
+
+        # Failure / reversal event
+        txn.payment_status = Transaction.PAYMENT_STATUS.FAILED
+        txn.gateway_reference = gateway_ref
+        txn.gateway_response = payload
+        txn.save(update_fields=["payment_status", "gateway_reference", "gateway_response", "updated_at"])
+
+        return CallbackLog.objects.create(
+            transaction_reference=transaction_ref,
+            raw_payload=payload,
+            response_code=response_code,
+            status=CallbackLog.Status.FAILED,
+            transaction=txn,
+            gateway="nomba",
+            is_duplicate=False,
+            is_amount_mismatch=False,
+        )
+
+# ---------------------------------------------------------------------------------------
+
+
+# Activate policy subscription
+# ----------------------------------------------------------------------------------------
 def _activate_subscription(txn: Transaction) -> None:
     """
     Activate or renew the PolicySubscription linked to a successful transaction.
@@ -386,9 +590,14 @@ def _activate_subscription(txn: Transaction) -> None:
 
     except Exception as e:
         logger.error("Failed to activate subscription for txn %s: %s", txn.reference, str(e))
+# --------------------------------------------------------------------------------------------
 
 
-def _fire_n8n_webhook(txn: Transaction) -> None:
+# N8N Transaction Webhooks
+
+# N8N payment webhook
+# -------------------------------------------------------------------------------------------
+def _fire_n8n_payment_webhook(txn: Transaction) -> None:
     """
     Notify n8n of a successful payment to trigger automation tracks:
       Track A — customer notification
