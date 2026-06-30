@@ -559,6 +559,53 @@ class StaffServiceAccountCreateView(APIView):
             status=status.HTTP_201_CREATED,
         )
 
+
+class StaffServiceAccountListView(APIView):
+    """
+    Staff-only. Lists all service account credentials for audit purposes.
+    Never returns the secret — only client_id, name, status, and usage.
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        creds = ServiceAccountCredential.objects.select_related("user").order_by("-created_at")
+        data = [
+            {
+                "client_id": c.client_id,
+                "name": c.name,
+                "is_active": c.is_active,
+                "created_at": c.created_at,
+                "last_used_at": c.last_used_at,
+                "email": c.user.email,
+            }
+            for c in creds
+        ]
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class StaffServiceAccountRevokeView(APIView):
+    """
+    Staff-only. Deactivates a service account credential (does not delete it,
+    preserving audit history). The associated CustomUser is also disabled
+    so it can't authenticate by any path.
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request, client_id):
+        try:
+            cred = ServiceAccountCredential.objects.select_related("user").get(client_id=client_id)
+        except ServiceAccountCredential.DoesNotExist:
+            return Response({"detail": "Service account not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        cred.is_active = False
+        cred.save(update_fields=["is_active"])
+
+        cred.user.is_active = False
+        cred.user.save(update_fields=["is_active"])
+
+        return Response({"detail": f"Service account '{cred.name}' revoked."}, status=status.HTTP_200_OK)
+
+
 class ServiceAccountTokenView(APIView):
     """
     POST /auth/service-account/token/

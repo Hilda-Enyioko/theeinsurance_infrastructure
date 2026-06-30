@@ -10,6 +10,8 @@ from .views import (
     StaffPartnerKYCReviewView,
     StaffDistributorAccessView,
     StaffServiceAccountCreateView,
+    StaffServiceAccountListView,
+    StaffServiceAccountRevokeView,
     ServiceAccountTokenView,
 )
 
@@ -31,7 +33,9 @@ urlpatterns = [
     path("staff/kyc/partners/", StaffPartnerKYCReviewView.as_view(), name="staff-partner-kyc-list"),
     path("staff/kyc/partners/<uuid:partner_id>/", StaffPartnerKYCReviewView.as_view(), name="staff-partner-kyc-review"),
     path("staff/distributor-access/", StaffDistributorAccessView.as_view(), name="staff-distributor-access"),
-    path("staff/service-accounts/", StaffServiceAccountCreateView.as_view(), name="staff-service-account-create"),
+    path("staff/service-accounts/", StaffServiceAccountListView.as_view(), name="staff-service-account-list"),
+    path("staff/service-accounts/create/", StaffServiceAccountCreateView.as_view(), name="staff-service-account-create"),
+    path("staff/service-accounts/<str:client_id>/revoke/", StaffServiceAccountRevokeView.as_view(), name="staff-service-account-revoke"),
     
     # service accounts
     path("auth/service-account/token/", ServiceAccountTokenView.as_view(), name="service-account-token"),
