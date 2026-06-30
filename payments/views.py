@@ -15,6 +15,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from drf_spectacular.utils import extend_schema
 
 from .models import Transaction
 from .serializers import InitiatePaymentSerializer, TransactionSerializer
@@ -25,6 +26,7 @@ from .services import (
     initiate_payment,
     process_webhook,
     verify_transaction,
+    initiate_nomba_checkout,
 )
 
 logger = logging.getLogger(__name__)
@@ -147,7 +149,7 @@ class PaymentCallbackView(APIView):
         )
 
 
-class PaymentWebhookView(APIView):
+class InterswitchWebhookView(APIView):
     """
     POST /payments/webhook/
 
@@ -206,3 +208,109 @@ class PaymentWebhookView(APIView):
             logger.error("Unexpected error processing webhook: %s", str(e))
 
         return Response({"detail": "Received."}, status=status.HTTP_200_OK)
+
+
+# Nomba
+# -----------------------------------------------------------------------------------
+class NombaCheckoutView(APIView):
+    """
+    POST /payments/nomba/checkout/
+
+    Partner backend calls this after:
+      1. Customer has selected a plan (subscription in 'pending_payment')
+      2. Customer has explicitly consented to automated renewal charges
+
+    Request body:
+      {
+        "subscription_id":    "<uuid>",
+        "customer_consented": true
+      }
+
+    Response:
+      {
+        "checkout_link":   "https://checkout.nomba.com/pay/...",
+        "order_reference": "<nomba-order-ref>",
+        "transaction_ref": "TII-XXXXXXXX",
+        "amount":          "5000.00",
+        "currency":        "NGN"
+      }
+
+    The partner redirects their customer to checkout_link to complete payment.
+    On success, Nomba fires a webhook to /payments/nomba/webhook/ containing
+    the tokenKey for future automated charges.
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes   = [PartnerRateThrottle]
+
+    @extend_schema(
+        summary="Initiate Nomba Checkout",
+        description=(
+            "Creates a Nomba checkout order for a pending subscription. "
+            "Requires explicit customer consent to automated charges. "
+            "Returns a checkout link for the partner to redirect their customer to."
+        ),
+        request={
+            "application/json": {
+                "type": "object",
+                "required": ["subscription_id", "customer_consented"],
+                "properties": {
+                    "subscription_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "UUID of the PolicySubscription in pending_payment status.",
+                    },
+                    "customer_consented": {
+                        "type": "boolean",
+                        "description": "Must be true. Confirms customer agreed to automated renewal charges.",
+                    },
+                },
+            }
+        },
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "checkout_link":   {"type": "string"},
+                    "order_reference": {"type": "string"},
+                    "transaction_ref": {"type": "string"},
+                    "amount":          {"type": "string"},
+                    "currency":        {"type": "string"},
+                },
+            },
+            400: {"description": "Validation error or subscription not in correct state."},
+            500: {"description": "Gateway error."},
+        },
+        tags=["Payments"],
+        auth=["jwtAuth"],
+    )
+    def post(self, request: Request) -> Response:
+        subscription_id    = request.data.get("subscription_id")
+        customer_consented = request.data.get("customer_consented", False)
+
+        if not subscription_id:
+            return Response(
+                {"error": "subscription_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not isinstance(customer_consented, bool):
+            return Response(
+                {"error": "customer_consented must be a boolean."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = initiate_nomba_checkout(subscription_id, customer_consented)
+            return Response(result, status=status.HTTP_200_OK)
+        except PaymentError as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as e:
+            logger.error("Unexpected error in NombaCheckoutView: %s", str(e))
+            return Response(
+                {"error": "An unexpected error occurred."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
