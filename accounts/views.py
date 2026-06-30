@@ -8,6 +8,8 @@ This module provides Django REST Framework (DRF) API endpoints handling:
 - High-level administrative operations by internal TheeInsurance staff.
 """
 
+import secrets
+from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
@@ -18,9 +20,9 @@ from django.utils import timezone
 
 from accounts.permissions import IsSuperAdmin, IsPartnerAdmin, IsCustomer
 from core.throttles import IPRateThrottle, PartnerRateThrottle
-from .models import PartnerKYC, CustomerProfile, ServiceAccountCredential
+from .models import CustomUser, PartnerKYC, CustomerProfile, ServiceAccountCredential
 from core.models import Partner
-from webhooks.views import dispatch_webhook
+from webhooks.services import dispatch_webhook
 
 from .serializers import (
     CustomerRegistrationSerializer,
@@ -504,6 +506,58 @@ class StaffDistributorAccessView(APIView):
         except DistributorProviderAccess.DoesNotExist:
             return Response({"error": "Access record not found."}, status=404)
 
+
+class StaffServiceAccountCreateView(APIView):
+    """
+    Staff-only endpoint to provision a service account (e.g. for n8n).
+
+    The raw client_secret is returned ONLY in this response. It is never
+    stored in plaintext and cannot be retrieved again — if it's lost, the
+    credential must be revoked and a new one issued.
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request):
+        name = request.data.get("name", "").strip()
+        if not name:
+            return Response(
+                {"detail": "A 'name' is required, e.g. 'n8n automation'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        slug = name.lower().replace(" ", "-")
+        email = f"svc-{slug}@internal.theeinsurance.local"
+
+        if CustomUser.objects.filter(email=email).exists():
+            return Response(
+                {"detail": f"A service account named '{name}' already exists."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        user = CustomUser.objects.create_user(
+            email=email,
+            password=None,
+            role="service_account",
+            first_name=name,
+            last_name="Service Account",
+        )
+        user.set_unusable_password()
+        user.save()
+
+        cred = ServiceAccountCredential(user=user, name=name)
+        raw_secret = secrets.token_urlsafe(32)
+        cred.set_secret(raw_secret)
+        cred.save()
+
+        return Response(
+            {
+                "client_id": cred.client_id,
+                "client_secret": raw_secret,  # shown once — copy it now
+                "name": cred.name,
+                "warning": "This secret will not be shown again. Store it securely.",
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 class ServiceAccountTokenView(APIView):
     """
