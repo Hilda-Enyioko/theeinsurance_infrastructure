@@ -19,6 +19,7 @@ from django.utils import timezone
 
 from .models import CallbackLog, Transaction
 from core.nomba_auth import get_nomba_token, NombaAuthError    # noqa: E402
+from core.models import ServiceWebhookEndpoint
 from subscriptions.models import NombaTokenStore
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,11 @@ def _build_redirect_url(transaction: Transaction) -> str:
     """
     base = settings.INTERSWITCH_REDIRECT_URL
     return f"{base}?ref={transaction.reference}"
+
+# Get N8N Service Webhook URL
+def _get_service_webhook_url(event: str) -> str | None:
+    endpoint = ServiceWebhookEndpoint.objects.filter(event=event, is_active=True).first()
+    return endpoint.url if endpoint else None
 
 # --------------------------------------------------------------------------------------
 
@@ -572,6 +578,226 @@ def process_nomba_webhook(payload: dict, signature: str) -> CallbackLog:
 # ---------------------------------------------------------------------------------------
 
 
+# Policy Renewal Engine
+# -------------------------------------------------------------------------------------
+
+def charge_policy_renewal(subscription_id: str) -> dict:
+    """
+    Charge a policy renewal using a stored Nomba tokenized card.
+
+    Called by:
+      - The renewal scheduler (Django management command or Celery beat)
+      - n8n via the service account endpoint on scheduled renewal dates
+      - Dunning retry attempts (n8n calls this again on day 1, 3, 7)
+
+    Flow:
+      1. Load the PolicySubscription and its NombaTokenStore
+      2. Guard against double-charging (idempotency at the DB level)
+      3. Create a new RENEWAL Transaction record
+      4. POST to Nomba /v1/checkout/tokenized-card-payment
+      5. On success  → activate/renew subscription, fire n8n payment.successful
+      6. On failure  → mark transaction FAILED, fire n8n charge.failed for dunning
+
+    Returns a dict with outcome details for the caller (n8n or scheduler).
+    """
+    from subscriptions.models import PolicySubscription, NombaTokenStore
+
+    # 1. Load subscription
+    try:
+        sub = PolicySubscription.objects.select_related(
+            'plan', 'customer'
+        ).get(id=subscription_id)
+    except PolicySubscription.DoesNotExist:
+        raise PaymentError(f"Subscription {subscription_id} not found.")
+
+    # 2. Guard: only charge active or grace-period subscriptions
+    if sub.status not in ('active', 'grace_period'):
+        raise PaymentError(
+            f"Subscription {subscription_id} is '{sub.status}'. "
+            "Only active or grace_period subscriptions can be renewed."
+        )
+
+    # 3. Guard: skip if auto-charge is disabled (customer revoked consent)
+    if not sub.auto_charge_enabled:
+        raise PaymentError(
+            f"Auto-charge is disabled for subscription {subscription_id}. "
+            "Skipping renewal charge."
+        )
+
+    # 4. Load the stored token
+    try:
+        token_store = NombaTokenStore.objects.get(policy=sub)
+    except NombaTokenStore.DoesNotExist:
+        raise PaymentError(
+            f"No stored Nomba token for subscription {subscription_id}. "
+            "Customer must complete a checkout to enable auto-renewal."
+        )
+
+    # 5. Idempotency guard at DB level:
+    #    If a PENDING renewal transaction already exists for this subscription,
+    #    a previous attempt is still in flight — don't fire a second charge.
+    in_flight = Transaction.objects.filter(
+        subscription=sub,
+        payment_type=Transaction.PAYMENT_TYPE.RENEWAL,
+        payment_status=Transaction.PAYMENT_STATUS.PENDING,
+        gateway=Transaction.GATEWAY.NOMBA,
+    ).exists()
+
+    if in_flight:
+        logger.warning(
+            "Renewal charge skipped for subscription %s — a PENDING renewal "
+            "transaction already exists. Possible duplicate trigger.",
+            subscription_id,
+        )
+        raise PaymentError(
+            f"A renewal charge is already in progress for subscription {subscription_id}."
+        )
+
+    # 6. Create the renewal Transaction record before calling Nomba
+    #    we have an audit trail even if the network call fails.
+    with db_transaction.atomic():
+        txn = Transaction.objects.create(
+            amount=sub.plan.premium_amount,
+            currency='NGN',
+            initiated_by=sub.customer,
+            subscription=sub,
+            payment_type=Transaction.PAYMENT_TYPE.RENEWAL,
+            payment_status=Transaction.PAYMENT_STATUS.PENDING,
+            gateway=Transaction.GATEWAY.NOMBA,
+        )
+
+    # 7. Build Nomba tokenized charge payload
+    charge_payload = {
+        "order": {
+            "orderReference": txn.reference,
+            "customerEmail":  sub.customer.email,
+            "amount":         float(sub.plan.premium_amount),
+            "currency":       "NGN",
+            "accountId":      settings.NOMBA_SUB_ACCOUNT_ID,
+            "callbackUrl":    settings.NOMBA_CALLBACK_URL,
+            "orderMetaData": {
+                "subscriptionId": str(sub.id),
+                "chargeType":     "AUTO_RENEWAL",
+            },
+        },
+        "tokenKey": token_store.token_key,
+    }
+
+    # 8. Call Nomba
+    try:
+        access_token = get_nomba_token()
+        response = requests.post(
+            f"{settings.NOMBA_BASE_URL}/checkout/tokenized-card-payment",
+            json=charge_payload,
+            headers={
+                "Authorization":    f"Bearer {access_token}",
+                "accountId":        settings.NOMBA_ACCOUNT_ID,
+                "Content-Type":     "application/json",
+                "X-Idempotency-Key": txn.reference,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    except NombaAuthError as e:
+        logger.error("Nomba auth failed during renewal for txn %s: %s", txn.reference, str(e))
+        _mark_renewal_failed(txn, error="auth_failure")
+        raise PaymentError("Could not authenticate with payment gateway.")
+
+    except requests.Timeout:
+        logger.error("Nomba renewal charge timed out for txn %s", txn.reference)
+        _mark_renewal_failed(txn, error="timeout")
+        raise PaymentError("Payment gateway timed out.")
+
+    except requests.RequestException as e:
+        logger.error("Nomba renewal request failed for txn %s: %s", txn.reference, str(e))
+        _mark_renewal_failed(txn, error=str(e))
+        raise PaymentError("Could not reach payment gateway.")
+
+    # 9. Handle Nomba response
+    response_code = data.get("code")
+    nomba_data    = data.get("data", {})
+    charge_status = nomba_data.get("status")
+
+    if response_code == "00" and charge_status is True:
+        # Success — activate the subscription and notify n8n
+        with db_transaction.atomic():
+            txn.payment_status    = Transaction.PAYMENT_STATUS.SUCCESSFUL
+            txn.gateway_reference = txn.reference   # Nomba doesn't return a separate ref here
+            txn.gateway_response  = data
+            txn.save(update_fields=[
+                "payment_status", "gateway_reference", "gateway_response", "updated_at"
+            ])
+            _activate_subscription(txn)
+
+        db_transaction.on_commit(lambda: _fire_n8n_payment_webhook(txn))
+
+        logger.info(
+            "Auto-renewal successful: subscription=%s txn=%s amount=%s",
+            sub.id, txn.reference, sub.plan.premium_amount,
+        )
+        return {
+            "outcome":          "success",
+            "transaction_ref":  txn.reference,
+            "subscription_id":  str(sub.id),
+            "amount":           str(sub.plan.premium_amount),
+        }
+
+    else:
+        # Nomba returned non-00 or status=False — card declined or gateway error
+        logger.warning(
+            "Auto-renewal charge failed: subscription=%s txn=%s code=%s message=%s",
+            sub.id, txn.reference, response_code, nomba_data.get("message", ""),
+        )
+        _mark_renewal_failed(txn, error=nomba_data.get("message", "declined"), raw=data)
+
+        return {
+            "outcome":          "failed",
+            "transaction_ref":  txn.reference,
+            "subscription_id":  str(sub.id),
+            "failure_reason":   nomba_data.get("message", "declined"),
+        }
+
+# ----------------------------------------------------------------------------------------
+
+
+# Failed Policy Renewal Processing
+# ----------------------------------------------------------------------------------------
+def _mark_renewal_failed(
+    txn: Transaction,
+    error: str = "",
+    raw: dict | None = None,
+) -> None:
+    """
+    Mark a renewal Transaction as FAILED, put the subscription into
+    grace_period, and fire the charge.failed webhook to n8n so it can
+    begin the dunning schedule (day 1 → day 3 → day 7).
+    """
+    from subscriptions.models import PolicySubscription
+
+    txn.payment_status   = Transaction.PAYMENT_STATUS.FAILED
+    txn.gateway_response = raw or {"error": error}
+    txn.save(update_fields=["payment_status", "gateway_response", "updated_at"])
+
+    # Put subscription into grace period — it's still technically active
+    # but flagged for dunning. n8n decides when to lapse it.
+    try:
+        sub = txn.subscription
+        sub.status = 'grace_period'
+        sub.save(update_fields=["status", "updated_at"])
+    except Exception as e:
+        logger.error(
+            "Could not set grace_period for subscription linked to txn %s: %s",
+            txn.reference, str(e),
+        )
+
+    # Fire charge.failed to n8n outside the atomic block (called directly,
+    # not via on_commit, because this function may be called outside a transaction)
+    _fire_n8n_dunning_webhook(txn, error=error)
+
+# ---------------------------------------------------------------------------------------
+
 # Activate policy subscription
 # ----------------------------------------------------------------------------------------
 def _activate_subscription(txn: Transaction) -> None:
@@ -627,3 +853,53 @@ def _fire_n8n_payment_webhook(txn: Transaction) -> None:
         logger.error("n8n webhook failed for txn %s: %s", txn.reference, str(e))
 
 # ----------------------------------------------------------------------------------
+
+def _fire_n8n_dunning_webhook(txn: Transaction, error: str = "") -> None:
+    """
+    Notify n8n that a renewal charge failed.
+
+    n8n receives this and starts the dunning workflow:
+      - Day 1: retry charge + notify customer
+      - Day 3: retry charge + escalate notification
+      - Day 7: final retry; if still failed, lapse subscription
+
+    Payload contract (share with automation engineer):
+      {
+        "event":              "charge.failed",
+        "transaction_ref":    "TII-XXXXXXXX",
+        "subscription_id":    "<uuid>",
+        "customer_email":     "customer@example.com",
+        "amount":             "5000.00",
+        "currency":           "NGN",
+        "failure_reason":     "declined" | "timeout" | "auth_failure" | ...,
+        "retry_endpoint":     "POST /payments/nomba/renewal/charge/",
+        "retry_payload":      { "subscription_id": "<uuid>" }
+      }
+    """
+    try:
+        sub = txn.subscription
+    except Exception:
+        logger.error("Could not load subscription for dunning webhook, txn %s", txn.reference)
+        return
+
+    url = _get_service_webhook_url("charge.failed") or settings.N8N_WEBHOOK_DUNNING_URL
+    payload = {
+        "event":           "charge.failed",
+        "transaction_ref": txn.reference,
+        "subscription_id": str(sub.id),
+        "customer_email":  sub.customer.email if sub.customer else None,
+        "amount":          str(txn.amount),
+        "currency":        txn.currency,
+        "failure_reason":  error or "unknown",
+        "retry_endpoint":  "POST /api/v1/payments/nomba/renewal/charge/",
+        "retry_payload":   {"subscription_id": str(sub.id)},
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        response.raise_for_status()
+        logger.info("n8n dunning webhook fired for txn %s", txn.reference)
+    except requests.RequestException as e:
+        logger.error("n8n dunning webhook failed for txn %s: %s", txn.reference, str(e))
+# -------------------------------------------------------------------------------------------
+
