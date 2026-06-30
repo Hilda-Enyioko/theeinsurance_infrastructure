@@ -17,6 +17,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from django.contrib.auth import authenticate
 from django.utils import timezone
+from datetime import timedelta
 
 from accounts.permissions import IsSuperAdmin, IsPartnerAdmin, IsCustomer
 from core.throttles import IPRateThrottle, PartnerRateThrottle
@@ -624,6 +625,8 @@ class ServiceAccountTokenView(APIView):
     """
     permission_classes = []
     authentication_classes = []
+    
+    SERVICE_ACCOUNT_TOKEN_LIFETIME = timedelta(days=10)
 
     def post(self, request):
         client_id = request.data.get("client_id")
@@ -653,10 +656,15 @@ class ServiceAccountTokenView(APIView):
         refresh = RefreshToken.for_user(cred.user)
         refresh["role"] = cred.user.role
         refresh["service_account"] = True
+        refresh.set_exp(lifetime=self.SERVICE_ACCOUNT_TOKEN_LIFETIME)
+
         access = refresh.access_token
+        access["role"] = cred.user.role
+        access["service_account"] = True
+        access.set_exp(lifetime=self.SERVICE_ACCOUNT_TOKEN_LIFETIME)
 
         return Response({
             "access": str(access),
             "refresh": str(refresh),
-            "expires_in": int(access.lifetime.total_seconds()),
+            "expires_in": int(self.SERVICE_ACCOUNT_TOKEN_LIFETIME.total_seconds()),
         }, status=200)
