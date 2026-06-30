@@ -9,6 +9,7 @@ from .views import (
     StaffLoginView,
     StaffPartnerKYCReviewView,
     StaffDistributorAccessView,
+    ServiceAccountTokenView,
 )
 
 urlpatterns = [
@@ -29,4 +30,7 @@ urlpatterns = [
     path("staff/kyc/partners/", StaffPartnerKYCReviewView.as_view(), name="staff-partner-kyc-list"),
     path("staff/kyc/partners/<uuid:partner_id>/", StaffPartnerKYCReviewView.as_view(), name="staff-partner-kyc-review"),
     path("staff/distributor-access/", StaffDistributorAccessView.as_view(), name="staff-distributor-access"),
+    
+    # service accounts
+    path("auth/service-account/token/", ServiceAccountTokenView.as_view(), name="service-account-token"),
 ]
