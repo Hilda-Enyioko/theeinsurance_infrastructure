@@ -90,9 +90,10 @@ class IsServiceAccount(BasePermission):
     Requires authentication — n8n must call with a valid JWT
     belonging to a dedicated service account user (role='service').
     """
+class IsServiceAccount(BasePermission):
     def has_permission(self, request, view):
-        return (
+        return bool(
             request.user
             and request.user.is_authenticated
-            and request.user.role == "service"
+            and getattr(request.user, "role", None) == "service_account"
         )

@@ -11,6 +11,8 @@ class PolicySubscription(models.Model):
         ("expired", "Expired"),
         ("cancelled", "Cancelled"),
         ("failed", "Failed"),
+        ("grace_period", "Grace Period"),
+        ("lapsed", "Lapsed"),
         ("pending_payment", "Pending Payment"),
         ("pending_document", "Pending Document"),
     ]
@@ -71,6 +73,7 @@ class PolicySubscription(models.Model):
     payment_reference: models.CharField = models.CharField(max_length=255, unique=True, null=True, blank=True)
     payment_verified: models.BooleanField = models.BooleanField(default=False)
 
+    auto_charge_enabled = models.BooleanField(default=False)
     created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
     updated_at: models.DateTimeField = models.DateTimeField(auto_now=True)
 
@@ -145,3 +148,34 @@ class SubscriptionDocument(models.Model):
 
     def __str__(self):
         return f"{self.subscription} — {self.document_type}"
+
+
+class NombaTokenStore(models.Model):
+    """
+    Stores the tokenized card key returned by Nomba after a successful
+    checkout payment. Only created when the customer explicitly consented
+    to automated subscription charges.
+    """
+    
+    policy = models.OneToOneField(
+        'PolicySubscription',
+        on_delete=models.CASCADE,
+        related_name='nomba_token'
+    )
+    token_key = models.CharField(max_length=255)
+    card_type = models.CharField(max_length=50, blank=True)
+    card_pan  = models.CharField(max_length=50, blank=True)
+
+    customer_consented_to_auto_charge = models.BooleanField(default=False)
+    consent_recorded_at = models.DateTimeField(null=True, blank=True)
+
+    nomba_order_reference = models.CharField(max_length=255, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Nomba Token Store"
+
+    def __str__(self):
+        return f"Token for Policy {self.policy_id} — {self.card_pan or 'no pan'}"

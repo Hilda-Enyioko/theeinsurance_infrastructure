@@ -1,13 +1,15 @@
 from django.http import JsonResponse
+from django.urls import resolve, Resolver404
 from .models import Partner
 
 
-EXEMPT_PATHS = [
-    "/api/v1/partner/onboard/",
-    "/api/v1/partner/kyc/",
-    "/api/v1/auth/login/",
-    "/api/v1/auth/token/refresh/",
-    "/api/v1/staff/auth/login/",
+EXEMPT_VIEW_NAMES = [
+    "partner-onboard",
+    "partner-kyc",
+    "customer-register",
+    "customer-kyc",
+    "login",
+    "token-refresh",
 ]
 
 
@@ -17,7 +19,16 @@ class PartnerScopeMiddleware:
 
     def __call__(self, request):
         if request.path.startswith("/api/v1/"):
-            if request.path not in EXEMPT_PATHS:
+            if any(path in request.path for path in ("/staff/", "/service-account/")):
+                return self.get_response(request)
+            
+            try:
+                match = resolve(request.path)
+                view_name = match.view_name
+            except Resolver404:
+                view_name = None
+
+            if view_name not in EXEMPT_VIEW_NAMES:
                 api_key = request.headers.get("X-Partner-Key")
 
                 if not api_key:

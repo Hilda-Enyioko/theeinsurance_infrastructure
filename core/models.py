@@ -87,4 +87,34 @@ class WebhookEvent(models.Model):
 
     def __str__(self):
         return f"{self.webhook} → {self.event}"
-    
+
+
+class ServiceWebhookEndpoint(models.Model):
+    """
+    Callback URLs registered by internal service accounts (n8n, schedulers)
+    for receiving lifecycle events from theeinsurance — distinct from the
+    partner-facing Webhook/WebhookEvent models above.
+    """
+    EVENT_CHOICES = [
+        ("payment.successful", "Payment Successful"),
+        ("charge.failed", "Charge Failed (Dunning)"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    service_account = models.ForeignKey(
+        "accounts.CustomUser",
+        on_delete=models.CASCADE,
+        related_name="service_webhooks",
+        limit_choices_to={"role": "service_account"},
+    )
+    event = models.CharField(max_length=50, choices=EVENT_CHOICES)
+    url = models.URLField()
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ["service_account", "event"]
+
+    def __str__(self):
+        return f"{self.service_account.email} → {self.event} → {self.url}"

@@ -1,5 +1,7 @@
 import uuid
+import secrets
 from django.db import models
+from django.contrib.auth.hashers import make_password, check_password
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from core.models import Partner
 
@@ -28,6 +30,7 @@ class CustomUserManager(BaseUserManager):
 class CustomUser(AbstractBaseUser, PermissionsMixin):
     ROLE_CHOICES = [
         ("super_admin", "Super Admin"),
+        ("service_account", "Service Account"),
         ("partner_admin", "Partner Admin"),
         ("customer", "Customer"),
     ]
@@ -243,3 +246,41 @@ class PartnerKYC(models.Model):
 
     def __str__(self):
         return f"{self.partner.name} — {self.status}"
+
+
+# Service Account
+
+class ServiceAccountCredential(models.Model):
+    """
+    Client credentials for non-human callers (n8n, schedulers) that need
+    API access without an interactive user login. Tied 1:1 to a CustomUser
+    with role='service_account' so existing permission/JWT machinery works
+    unchanged downstream.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.OneToOneField(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name="service_credential",
+        limit_choices_to={"role": "service_account"},
+    )
+    name = models.CharField(max_length=100)  # e.g. "n8n automation"
+    client_id = models.CharField(max_length=64, unique=True, editable=False)
+    client_secret_hash = models.CharField(max_length=128, editable=False)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    def set_secret(self, raw_secret: str) -> None:
+        self.client_secret_hash = make_password(raw_secret)
+
+    def check_secret(self, raw_secret: str) -> bool:
+        return check_password(raw_secret, self.client_secret_hash)
+
+    def save(self, *args, **kwargs):
+        if not self.client_id:
+            self.client_id = secrets.token_urlsafe(24)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} ({self.client_id})"

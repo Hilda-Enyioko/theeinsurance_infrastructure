@@ -9,12 +9,27 @@ Endpoints:
 
 from django.urls import path
 
-from .views import InitiatePaymentView, PaymentCallbackView, PaymentWebhookView
+from .views import (
+  InitiatePaymentView,
+  PaymentCallbackView,
+  InterswitchWebhookView,
+  NombaCheckoutView,
+  NombaWebhookView,
+  NombaRenewalChargeView,
+  DunningFinalFailureView,
+)
 
 app_name = 'payments'
 
 urlpatterns = [
-    path('initiate/', InitiatePaymentView.as_view(), name='initiate'),
-    path('callback/', PaymentCallbackView.as_view(), name='callback'),
-    path('webhook/', PaymentWebhookView.as_view(), name='webhook'),
+  # Interswitch Payment Endpoints
+  path('initiate/', InitiatePaymentView.as_view(), name='initiate'),
+  path('callback/', PaymentCallbackView.as_view(), name='callback'),
+  path('interswitch/webhook/', InterswitchWebhookView.as_view(), name='webhook'),
+  
+  # Nomba Payment Endpoints
+  path('nomba/checkout/', NombaCheckoutView.as_view(), name='nomba-checkout'),
+  path('nomba/webhook/', NombaWebhookView.as_view(), name='nomba-webhook'),
+  path('nomba/renewal/charge/', NombaRenewalChargeView.as_view(), name='nomba-renewal-charge'),
+  path("dunning/final-failure/", DunningFinalFailureView.as_view(), name="dunning-final-failure"),
 ]
