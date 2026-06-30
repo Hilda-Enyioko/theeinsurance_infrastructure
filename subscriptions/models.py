@@ -3,6 +3,7 @@ from django.db import models
 from accounts.models import CustomerProfile
 from plans.models import InsurancePlan
 from core.models import Partner
+from core.storage import KYCDocumentStorage
 
 #---Policy Subscription---
 class PolicySubscription(models.Model):
@@ -140,7 +141,10 @@ class SubscriptionDocument(models.Model):
         related_name="documents",
     )
     document_type: models.CharField = models.CharField(max_length=50, choices=DOCUMENT_TYPE_CHOICES)
-    file: models.FileField = models.FileField(upload_to="subscriptions/documents/")
+    file: models.FileField = models.FileField(
+        upload_to="subscriptions/documents/",
+        storage=KYCDocumentStorage(),
+    )
     uploaded_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
 
     class Meta:

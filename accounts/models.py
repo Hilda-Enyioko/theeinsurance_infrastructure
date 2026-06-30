@@ -4,6 +4,7 @@ from django.db import models
 from django.contrib.auth.hashers import make_password, check_password
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from core.models import Partner
+from core.storage import KYCDocumentStorage
 
 
 # User Manager
@@ -182,12 +183,14 @@ class CustomerKYC(models.Model):
     )
     
     id_document: models.FileField = models.FileField(
-        upload_to="kyc/customers/id/"
+        upload_to="kyc/customers/id/",
+        storage=KYCDocumentStorage(),
     )
     
     selfie: models.FileField = models.FileField(
         upload_to="kyc/customers/selfie/",
-        blank=True
+        blank=True,
+        storage=KYCDocumentStorage(),
     )
     
     status: models.CharField = models.CharField(
@@ -233,9 +236,19 @@ class PartnerKYC(models.Model):
     tax_identification_number: models.CharField = models.CharField(max_length=20, unique=True)
 
     # Documents
-    cac_certificate = models.FileField(upload_to="kyc/partners/cac/")
-    naicom_licence_doc = models.FileField(upload_to="kyc/partners/naicom/", blank=True)
-    proof_of_address = models.FileField(upload_to="kyc/partners/address/")
+    cac_certificate = models.FileField(
+        upload_to="kyc/partners/cac/",
+        storage=KYCDocumentStorage(),
+    )
+    naicom_licence_doc = models.FileField(
+        upload_to="kyc/partners/naicom/",
+        blank=True,
+        storage=KYCDocumentStorage(),
+    )
+    proof_of_address = models.FileField(
+        upload_to="kyc/partners/address/",   
+        storage=KYCDocumentStorage(),
+    )
 
     # Review
     status: models.CharField = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")

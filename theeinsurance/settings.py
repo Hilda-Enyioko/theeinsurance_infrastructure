@@ -44,13 +44,15 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
-    'django.contrib.staticfiles',
 
     # third party apps
     'rest_framework',
     'corsheaders',
     'drf_spectacular',
     'drf_spectacular_sidecar',
+    'cloudinary_storage',
+    'cloudinary',
+    'django.contrib.staticfiles',
 
     # local apps
     'accounts',
@@ -103,6 +105,11 @@ DATABASES = {
     #     'ENGINE': 'django.db.backends.sqlite3',
     #     'NAME': BASE_DIR / 'db.sqlite3',
     # }
+        "default": dj_database_url.parse(
+        os.getenv("DATABASE_URL"),
+        conn_max_age=600,
+        conn_health_checks=True,
+    )
 }
 
 
@@ -186,6 +193,13 @@ AUTH_USER_MODEL = "accounts.CustomUser"
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
+CLOUDINARY_STORAGE = {
+    "CLOUD_NAME": os.getenv("CLOUDINARY_CLOUD_NAME"),
+    "API_KEY": os.getenv("CLOUDINARY_API_KEY"),
+    "API_SECRET": os.getenv("CLOUDINARY_API_SECRET"),
+}
+
+DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
 
 # CACHE CONFIGURATION
 # Dev: LocMemCache (default, no setup needed)
