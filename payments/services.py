@@ -16,12 +16,13 @@ from django.conf import settings
 from django.db import transaction as db_transaction
 
 from .models import CallbackLog, Transaction
+from core.nomba_auth import get_nomba_token, NombaAuthError    # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 
 # Exceptions
-
+# ----------------------------------------------------------------------------------
 class PaymentError(Exception):
     """Raised when payment initiation or verification fails."""
     pass
@@ -31,9 +32,10 @@ class SignatureVerificationError(Exception):
     """Raised when an incoming webhook signature cannot be verified."""
     pass
 
+# ------------------------------------------------------------------------------------
 
 # Internal helpers
-
+# ------------------------------------------------------------------------------------
 def _get_interswitch_headers() -> dict:
     """
     Build standard headers for all outbound Interswitch API calls.
@@ -62,9 +64,10 @@ def _build_redirect_url(transaction: Transaction) -> str:
     base = settings.INTERSWITCH_REDIRECT_URL
     return f"{base}?ref={transaction.reference}"
 
+# --------------------------------------------------------------------------------------
 
 # Signature verification
-
+# ---------------------------------------------------------------------------------------
 def verify_webhook_signature(payload_bytes: bytes, signature_header: str) -> bool:
     """
     Verify that an incoming webhook was genuinely sent by Interswitch.
@@ -85,8 +88,10 @@ def verify_webhook_signature(payload_bytes: bytes, signature_header: str) -> boo
 
     return True
 
+# ----------------------------------------------------------------------------------------
 
-# Core service functions
+# Initiate Payment and Checkout
+# ----------------------------------------------------------------------------------------
 def initiate_payment(transaction: Transaction) -> dict:
     """
     Initiate a Quickteller Pay redirect session for a given Transaction.
@@ -138,6 +143,124 @@ def initiate_payment(transaction: Transaction) -> dict:
     }
 
 
+# Nomba Checkout
+
+def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> dict:
+    """
+    Create a Nomba checkout order for a policy subscription.
+
+    Called by the partner's backend after the customer has confirmed they
+    want automated renewal charges. The partner passes consent explicitly;
+    we refuse to tokenize without it.
+
+    Returns checkoutLink and orderReference for the partner to hand to
+    their frontend.
+    """
+    from subscriptions.models import PolicySubscription
+
+    # 1. Load and validate the subscription
+    try:
+        sub = PolicySubscription.objects.select_related(
+            'plan', 'customer'
+        ).get(id=subscription_id)
+    except PolicySubscription.DoesNotExist:
+        raise PaymentError(f"Subscription {subscription_id} not found.")
+
+    if sub.status != 'pending_payment':
+        raise PaymentError(
+            f"Subscription is '{sub.status}'. "
+            "Only subscriptions in 'pending_payment' status can be checked out."
+        )
+
+    # 2. Consent gate — never tokenize without explicit customer consent
+    if not customer_consented:
+        raise PaymentError(
+            "Customer consent to automated charges is required to proceed."
+        )
+
+    # 3. Create an internal Transaction record before calling Nomba
+    with db_transaction.atomic():
+        txn = Transaction.objects.create(
+            amount=sub.plan.premium_amount,
+            currency='NGN',
+            initiated_by=sub.customer,
+            subscription=sub,
+            payment_type=Transaction.PAYMENT_TYPE.NEW_SUBSCRIPTION,
+            payment_status=Transaction.PAYMENT_STATUS.PENDING,
+            gateway=Transaction.GATEWAY.NOMBA,
+        )
+
+    # 4. Build the Nomba checkout order payload
+    order_payload = {
+        "order": {
+            "orderReference":   txn.reference,
+            "customerId":       str(sub.customer.id),
+            "customerEmail":    sub.customer.email,
+            "amount":           str(sub.plan.premium_amount),
+            "currency":         "NGN",
+            "accountId":        settings.NOMBA_SUB_ACCOUNT_ID,
+            "callbackUrl":      settings.NOMBA_CALLBACK_URL,
+            "orderMetaData": {
+                "subscriptionId": str(sub.id),
+                "policyNumber":   str(sub.id),
+            },
+        },
+        "tokenizeCard": True,
+    }
+
+    # 5. Call Nomba
+    try:
+        token = get_nomba_token()
+        response = requests.post(
+            f"{settings.NOMBA_BASE_URL}/checkout/order",
+            json=order_payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "accountId":     settings.NOMBA_ACCOUNT_ID,
+                "Content-Type":  "application/json",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except NombaAuthError as e:
+        logger.error("Nomba auth failed during checkout for txn %s: %s", txn.reference, str(e))
+        raise PaymentError("Could not authenticate with payment gateway.")
+    except requests.Timeout:
+        logger.error("Nomba checkout timed out for txn %s", txn.reference)
+        raise PaymentError("Payment gateway timed out. Please try again.")
+    except requests.RequestException as e:
+        logger.error("Nomba checkout request failed for txn %s: %s", txn.reference, str(e))
+        raise PaymentError("Could not reach payment gateway.")
+
+    if data.get("code") != "00":
+        logger.error("Nomba checkout non-00 for txn %s: %s", txn.reference, data)
+        raise PaymentError(f"Gateway error: {data.get('description', 'unknown')}")
+
+    nomba_data = data["data"]
+    checkout_link     = nomba_data["checkoutLink"]
+    order_reference   = nomba_data["orderReference"]
+
+    # 6. Store the Nomba order reference on the transaction for reconciliation
+    txn.gateway_reference = order_reference
+    txn.save(update_fields=["gateway_reference", "updated_at"])
+
+    logger.info(
+        "Nomba checkout created: txn=%s order_reference=%s",
+        txn.reference, order_reference
+    )
+
+    return {
+        "checkout_link":     checkout_link,
+        "order_reference":   order_reference,
+        "transaction_ref":   txn.reference,
+        "amount":            str(sub.plan.premium_amount),
+        "currency":          "NGN",
+    }
+
+# -------------------------------------------------------------------------------------
+
+# -------------------------------------------------------------------------------------
 def verify_transaction(reference: str) -> dict:
     """
     Query Interswitch to verify the status of a transaction by reference.
@@ -243,7 +366,7 @@ def process_webhook(payload: dict, raw_body: bytes, signature: str) -> CallbackL
         _fire_n8n_webhook(txn)
 
     return log
-
+# --------------------------------------------------------------------------------------
 
 # Side-effect helpers (called from process_webhook)
 
@@ -293,3 +416,5 @@ def _fire_n8n_webhook(txn: Transaction) -> None:
     except requests.RequestException as e:
         # Non-fatal — n8n failure should never block the payment confirmation
         logger.error("n8n webhook failed for txn %s: %s", txn.reference, str(e))
+
+# ----------------------------------------------------------------------------------
