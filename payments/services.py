@@ -332,9 +332,9 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
     order_payload = {
         "order": {
             "orderReference":   txn.reference,
-            "customerId":       str(sub.customer.id),
+            "customerId":       str(sub.customer.user.id),
             "customerEmail":    sub.customer.user.email,
-            "amount":           str(sub.plan.premium_amount),
+            "amount":           str(sub.plan.premium),
             "currency":         "NGN",
             "accountId":        settings.NOMBA_SUB_ACCOUNT_ID,
             "callbackUrl":      settings.NOMBA_CALLBACK_URL,
