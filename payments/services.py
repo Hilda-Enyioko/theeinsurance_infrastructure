@@ -392,7 +392,7 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
         "checkout_link":     checkout_link,
         "order_reference":   order_reference,
         "transaction_ref":   txn.reference,
-        "amount":            str(sub.plan.premium_amount),
+        "amount":            str(sub.plan.premium),
         "currency":          "NGN",
     }
 
@@ -657,7 +657,7 @@ def charge_policy_renewal(subscription_id: str) -> dict:
     #    we have an audit trail even if the network call fails.
     with db_transaction.atomic():
         txn = Transaction.objects.create(
-            amount=sub.plan.premium_amount,
+            amount=sub.plan.premium,
             currency='NGN',
             initiated_by=sub.customer,
             subscription=sub,
@@ -671,7 +671,7 @@ def charge_policy_renewal(subscription_id: str) -> dict:
         "order": {
             "orderReference": txn.reference,
             "customerEmail":  sub.customer.email,
-            "amount":         float(sub.plan.premium_amount),
+            "amount":         float(sub.plan.premium),
             "currency":       "NGN",
             "accountId":      settings.NOMBA_SUB_ACCOUNT_ID,
             "callbackUrl":    settings.NOMBA_CALLBACK_URL,
@@ -735,13 +735,13 @@ def charge_policy_renewal(subscription_id: str) -> dict:
 
         logger.info(
             "Auto-renewal successful: subscription=%s txn=%s amount=%s",
-            sub.id, txn.reference, sub.plan.premium_amount,
+            sub.id, txn.reference, sub.plan.premium,
         )
         return {
             "outcome":          "success",
             "transaction_ref":  txn.reference,
             "subscription_id":  str(sub.id),
-            "amount":           str(sub.plan.premium_amount),
+            "amount":           str(sub.plan.premium),
         }
 
     else:
