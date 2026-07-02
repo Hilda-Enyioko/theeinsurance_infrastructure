@@ -321,7 +321,7 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
         txn = Transaction.objects.create(
             amount=sub.plan.premium,
             currency='NGN',
-            initiated_by=sub.customer,
+            initiated_by=sub.customer.user,
             subscription=sub,
             payment_type=Transaction.PAYMENT_TYPE.NEW_SUBSCRIPTION,
             payment_status=Transaction.PAYMENT_STATUS.PENDING,
@@ -333,7 +333,7 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
         "order": {
             "orderReference":   txn.reference,
             "customerId":       str(sub.customer.id),
-            "customerEmail":    sub.customer.email,
+            "customerEmail":    sub.customer.user.email,
             "amount":           str(sub.plan.premium_amount),
             "currency":         "NGN",
             "accountId":        settings.NOMBA_SUB_ACCOUNT_ID,
