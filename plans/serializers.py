@@ -30,7 +30,7 @@ class InsurancePlanCreateSerializer(serializers.ModelSerializer):
         fields = [
             "name", "category", "coverage_level",
             "coverage_amount", "premium", "duration_months",
-            "description",
+            "description", "is_active",
         ]
     
     def validate_category(self, value):
@@ -39,6 +39,7 @@ class InsurancePlanCreateSerializer(serializers.ModelSerializer):
         return value
     
     def create(self, validated_data):
+        validated_data.pop("is_active", None)
         provider = self.context["provider"]
         return InsurancePlan.objects.create(provider=provider, **validated_data)
 
