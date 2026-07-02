@@ -19,7 +19,7 @@ class PolicySubscriptionSerializer(serializers.ModelSerializer):
             "amount_paid", "provider_payout",
             "distributor_commission", "platform_fee",
             "payment_reference", "payment_verified",
-            "created_at", "updated_at",
+            "created_at", "updated_at", "auto_charge_enabled",
         ]
         read_only_fields = [
             "id", "customer", "provider", "distributor",
