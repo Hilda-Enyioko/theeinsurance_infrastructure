@@ -319,7 +319,7 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
     # 3. Create an internal Transaction record before calling Nomba
     with db_transaction.atomic():
         txn = Transaction.objects.create(
-            amount=sub.plan.premium_amount,
+            amount=sub.plan.premium,
             currency='NGN',
             initiated_by=sub.customer,
             subscription=sub,
