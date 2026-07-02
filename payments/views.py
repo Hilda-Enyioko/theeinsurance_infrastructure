@@ -536,9 +536,9 @@ class DunningFinalFailureView(APIView):
         if partner:
             dispatch_webhook(
                 partner=partner,
-                event_type="subscription.lapsed",
+                event_type="subscription.cancelled",
                 payload={
-                    "event": "subscription.lapsed",
+                    "event": "subscription.cancelled",
                     "subscription_id": str(sub.id),
                     "customer_email": sub.customer.user.email,
                     "transaction_reference": transaction_ref,
@@ -548,7 +548,7 @@ class DunningFinalFailureView(APIView):
             )
         else:
             logger.warning(
-                "No partner found for subscription %s — could not dispatch subscription lapsed notification.",
+                "No partner found for subscription %s — could not dispatch subscription cancelled notification.",
                 sub.id,
             )
 
