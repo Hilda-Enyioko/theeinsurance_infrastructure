@@ -842,7 +842,7 @@ def _fire_n8n_payment_webhook(txn: Transaction) -> None:
 
     try:
         response = requests.post(
-            settings.N8N_WEBHOOK_URL,
+            settings.N8N_WEBHOOK_PAYMENT_URL,
             json=payload,
             timeout=10,
         )
