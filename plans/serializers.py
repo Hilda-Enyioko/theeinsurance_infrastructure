@@ -44,7 +44,7 @@ class InsurancePlanCreateSerializer(serializers.ModelSerializer):
         return InsurancePlan.objects.create(provider=provider, **validated_data)
 
     def validate(self, attrs):
-        category = attrs.get("category")
+        category = attrs.get("category") or getattr(self.instance, "category", None)
         coverage_level = attrs.get("coverage_level")
 
         if category.name == "travel":
