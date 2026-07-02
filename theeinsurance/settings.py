@@ -261,3 +261,16 @@ SPECTACULAR_SETTINGS = {
     "OPERATION_ID_NAMING_STRATEGY": "operation_id",
     "SCHEMA_PATH_PREFIX": r"/api/v[0-9]",
 }
+
+STORAGES = {
+    "default": {
+        "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
+
+# Legacy alias — required because django-cloudinary-storage's collectstatic
+# override reads STATICFILES_STORAGE directly instead of STORAGES["staticfiles"]
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
