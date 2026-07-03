@@ -16,7 +16,7 @@ from datetime import timedelta
 from decouple import config  # type: ignore
 import dotenv
 import dj_database_url
-from requests.utils import default_headers
+from corsheaders.defaults import default_headers
 
 dotenv.load_dotenv()
 
