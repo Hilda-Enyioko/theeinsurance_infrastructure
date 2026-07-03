@@ -20,7 +20,8 @@ class WebhookListCreateView(APIView):
     @extend_schema(
         summary="List all webhooks",
         description="Retrieve a list of all webhooks configured for the authenticated partner account.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={200: OpenApiTypes.OBJECT},
+        tags=["Webhooks: Partner"]
     )
     def get(self, request):
         partner = get_partner_from_user(request.user)
@@ -51,13 +52,14 @@ class WebhookListCreateView(APIView):
                     "events": {"type": "array", "items": {"type": "string"}, "example": ["payment.successful"]}
                 },
                 "required": ["url", "events"]
-            }
+            },
         },
         responses={
             201: OpenApiTypes.OBJECT,
             400: OpenApiTypes.OBJECT,
             403: OpenApiTypes.OBJECT
-        }
+        },
+        tags=["Webhooks: Partner"]
     )
     def post(self, request):
         partner = get_partner_from_user(request.user)
@@ -198,7 +200,8 @@ class ServiceWebhookRegisterView(APIView):
     @extend_schema(
         summary="List service account webhooks",
         description="Retrieve all webhook configurations specifically registered for the calling service account (e.g., n8n).",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={200: OpenApiTypes.OBJECT},
+        tags=["Webhooks: Service Account"]
     )
     def get(self, request):
         endpoints = ServiceWebhookEndpoint.objects.filter(service_account=request.user)

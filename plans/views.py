@@ -34,7 +34,8 @@ class InsuranceCategoryListView(APIView):
 
     @extend_schema(
         summary="List active insurance categories",
-        responses={200: OpenApiResponse(description="A list of active categories.")} # Handled nicely by the internal object keys representation if needed, or inline dict.
+        responses={200: OpenApiResponse(description="A list of active categories.")},
+        tags=["Insurance Categories"]
     )
     def get(self, request):
         categories = InsuranceCategory.objects.filter(is_active=True)
@@ -63,7 +64,8 @@ class InsurancePlanListView(APIView):
             OpenApiParameter(name="search", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Search term for name or description"),
             OpenApiParameter(name="sort_by", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, default="-created_at", description="Sort fields: premium, -premium, created_at, -created_at, name"),
         ],
-        responses={200: OpenApiResponse(description="Filtered list of insurance plans.")}
+        responses={200: OpenApiResponse(description="Filtered list of insurance plans.")},
+        tags=["Insurance Plans"]
     )
     def get(self, request):
         partner = request.partner
@@ -120,7 +122,8 @@ class InsurancePlanDetailView(APIView):
         responses={
             200: InsurancePlanSerializer,
             404: OpenApiResponse(description="Plan not found or access denied.")
-        }
+        },
+        tags=["Insurance Plans"]
     )
     def get(self, request, plan_id):
         partner = request.partner
@@ -179,7 +182,8 @@ class ProviderPlanListCreateView(APIView):
         responses={
             201: InsurancePlanSerializer,
             400: OpenApiResponse(description="Validation error data.")
-        }
+        },
+        tags=["Insurance Plans"]
     )
     def post(self, request):
         partner = get_partner_from_user(request.user)
@@ -277,7 +281,8 @@ class DistributorProviderAccessView(APIView):
 
     @extend_schema(
         summary="Distributor Admin: View accessible providers",
-        responses={200: OpenApiResponse(description="List of allowed provider accesses.")}
+        responses={200: OpenApiResponse(description="List of allowed provider accesses.")},
+        tags=["Insurance Plans: Distributor Access"]
     )
     def get(self, request):
         partner = get_partner_from_user(request.user)
@@ -303,7 +308,8 @@ class PlanRecommendationView(APIView):
             OpenApiParameter(name="budget", type=OpenApiTypes.DECIMAL, location=OpenApiParameter.QUERY, description="Maximum premium budget allowed"),
             OpenApiParameter(name="coverage_level", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Target coverage level"),
         ],
-        responses={200: OpenApiResponse(description="Ranked and filtered recommended plans with context information.")}
+        responses={200: OpenApiResponse(description="Ranked and filtered recommended plans with context information.")},
+        tags=["Insurance Plans: AI Recommendations"]
     )
     def get(self, request):
         partner = request.partner
@@ -352,7 +358,8 @@ class PlanContextView(APIView):
 
     @extend_schema(
         summary="AI Engine: Fetch structured system prompt context",
-        responses={200: OpenApiResponse(description="Flattened, highly compressed plan parameters tailored for LLM consumption.")}
+        responses={200: OpenApiResponse(description="Flattened, highly compressed plan parameters tailored for LLM consumption.")},
+        tags=["Insurance Plans: AI Recommendations"]
     )
     def get(self, request):
         partner = request.partner

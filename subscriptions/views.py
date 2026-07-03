@@ -73,7 +73,8 @@ class CustomerSubscriptionListView(APIView):
                 required=False
             )
         ],
-        responses={200: PolicySubscriptionSerializer(many=True)}
+        responses={200: PolicySubscriptionSerializer(many=True)},
+        tags=["Subscriptions: Customer"]
     )
     def get(self, request):
         try:
@@ -108,7 +109,8 @@ class CustomerSubscriptionCreateView(APIView):
             201: OpenApiTypes.OBJECT,
             400: OpenApiTypes.OBJECT,
             403: OpenApiTypes.OBJECT
-        }
+        },
+        tags=["Subscriptions: Customer"]
     )
     def post(self, request):
         try:
@@ -185,7 +187,8 @@ class SubscriptionDocumentUploadView(APIView):
                 'required': ['document_type', 'file']
             }
         },
-        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT}
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+        tags=["Subscriptions: Customer"]
     )
     def post(self, request, subscription_id):
         try:
@@ -257,7 +260,8 @@ class SubscriptionDocumentUploadView(APIView):
     @extend_schema(
         summary="View Subscription Document Checklist",
         description="Returns lists of uploaded, required, and missing documentation statuses.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={200: OpenApiTypes.OBJECT},
+        tags=["Subscriptions: Customer"]
     )
     def get(self, request, subscription_id):
         """Returns uploaded documents and what is still missing."""
@@ -313,7 +317,8 @@ class CustomerSubscriptionDetailView(APIView):
     @extend_schema(
         summary="Retrieve Subscription Detail",
         description="Fetch explicit object properties of a given customer subscription instance.",
-        responses={200: PolicySubscriptionSerializer}
+        responses={200: PolicySubscriptionSerializer},
+        tags=["Subscriptions: Customer"]
     )
     def get(self, request, subscription_id):
         try:
@@ -331,7 +336,8 @@ class CustomerSubscriptionDetailView(APIView):
     @extend_schema(
         summary="Cancel Subscription",
         description="Transition an active subscription directly into a 'cancelled' status.",
-        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT}
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+        tags=["Subscriptions: Customer"]
     )
     def delete(self, request, subscription_id):
         try:
@@ -388,7 +394,8 @@ class PaymentVerificationView(APIView):
                 'required': ['payment_reference']
             }
         },
-        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT}
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+        tags=["Subscriptions: Customer"]
     )
     def post(self, request, subscription_id):
         try:
@@ -475,7 +482,8 @@ class PartnerSubscriptionListView(APIView):
                 required=False
             )
         ],
-        responses={200: PolicySubscriptionSerializer(many=True)}
+        responses={200: PolicySubscriptionSerializer(many=True)},
+        tags=["Subscriptions: Partner"]
     )
     def get(self, request):
         partner = get_partner_from_user(request.user)

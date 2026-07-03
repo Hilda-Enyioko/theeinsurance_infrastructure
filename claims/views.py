@@ -40,8 +40,7 @@ class CustomerClaimListCreateView(APIView):
             200: ClaimSerializer(many=True),
             404: {"description": "Customer profile not found for this partner context."},
         },
-        tags=["Customer Claims"],
-        auth=["jwtAuth"],
+        tags=["Customer Claims"]
     )
     def get(self, request):
         try:
@@ -74,8 +73,7 @@ class CustomerClaimListCreateView(APIView):
             400: {"description": "Validation error or subscription mismatch."},
             404: {"description": "Customer profile or Subscription context not found."},
         },
-        tags=["Customer Claims"],
-        auth=["jwtAuth"],
+        tags=["Customer Claims"]
     )
     def post(self, request):
         try:
@@ -147,7 +145,6 @@ class CustomerClaimDetailView(APIView):
             404: {"description": "Claim or customer profile context not found."},
         },
         tags=["Customer Claims"],
-        auth=["jwtAuth"],
     )
     def get(self, request, claim_id):
         try:
@@ -208,8 +205,7 @@ class ClaimDocumentUploadView(APIView):
             400: {"description": "Missing file elements or document validation type failure."},
             404: {"description": "Claim not found or closed for documentation entries."},
         },
-        tags=["Claim Documents"],
-        auth=["jwtAuth"],
+        tags=["Claim Documents"]
     )
     def post(self, request, claim_id):
         try:
@@ -285,8 +281,7 @@ class ClaimDocumentUploadView(APIView):
             ),
             404: {"description": "Claim contextual workspace profile missing."},
         },
-        tags=["Claim Documents"],
-        auth=["jwtAuth"],
+        tags=["Claim Documents"]
     )
     def get(self, request, claim_id):
         try:
@@ -328,8 +323,7 @@ class ProviderClaimListView(APIView):
             OpenApiParameter(name="claim_type", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter claims by explicit category type identifier", required=False),
         ],
         responses={200: ClaimSerializer(many=True)},
-        tags=["Provider Claim Management"],
-        auth=["jwtAuth"],
+        tags=["Provider Claim Management"]
     )
     def get(self, request):
         partner = get_partner_from_user(request.user)
@@ -366,8 +360,7 @@ class ProviderClaimReviewView(APIView):
             200: ClaimSerializer,
             404: {"description": "Claim reference data not found within provider administration domain."},
         },
-        tags=["Provider Claim Management"],
-        auth=["jwtAuth"],
+        tags=["Provider Claim Management"]
     )
     def get(self, request, claim_id):
         partner = get_partner_from_user(request.user)
@@ -399,8 +392,7 @@ class ProviderClaimReviewView(APIView):
             400: {"description": "Invalid decision metadata structures or invalid input constraints."},
             404: {"description": "Claim context target key missing."},
         },
-        tags=["Provider Claim Management"],
-        auth=["jwtAuth"],
+        tags=["Provider Claim Management"]
     )
     def patch(self, request, claim_id):
         partner = get_partner_from_user(request.user)
@@ -460,8 +452,7 @@ class StaffClaimListView(APIView):
             OpenApiParameter(name="status", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter claims by processing status", required=False)
         ],
         responses={200: ClaimSerializer(many=True)},
-        tags=["TheeInsurance Platform Core Operations"],
-        auth=["jwtAuth"],
+        tags=["TheeInsurance Platform Core Operations"]
     )
     def get(self, request):
         claims = Claim.objects.all()
@@ -491,8 +482,7 @@ class StaffClaimReviewView(APIView):
             200: ClaimSerializer,
             404: {"description": "Claim reference key not located in global records mapping."},
         },
-        tags=["TheeInsurance Platform Core Operations"],
-        auth=["jwtAuth"],
+        tags=["TheeInsurance Platform Core Operations"]
     )
     def get(self, request, claim_id):
         try:
@@ -522,8 +512,7 @@ class StaffClaimReviewView(APIView):
             400: {"description": "Triage input structural validation exception."},
             404: {"description": "Claim entry identifier element lookup mismatch."},
         },
-        tags=["TheeInsurance Platform Core Operations"],
-        auth=["jwtAuth"],
+        tags=["TheeInsurance Platform Core Operations"]
     )
     def patch(self, request, claim_id):
         try:

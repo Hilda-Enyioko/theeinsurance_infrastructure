@@ -66,8 +66,7 @@ class InitiatePaymentView(APIView):
             400: {"description": "Validation error."},
             502: {"description": "Gateway error."},
         },
-        tags=["Payments"],
-        auth=["jwtAuth"],
+        tags=["Payments"]
     )
     def post(self, request: Request) -> Response:
         serializer = InitiatePaymentSerializer(
@@ -127,8 +126,7 @@ class PaymentCallbackView(APIView):
             404: {"description": "Transaction not found."},
             502: {"description": "Gateway verification error."},
         },
-        tags=["Payments"],
-        auth=["jwtAuth"],
+        tags=["Payments"]
     )
     def get(self, request: Request) -> Response:
         reference = request.query_params.get('ref')
@@ -303,8 +301,7 @@ class NombaCheckoutView(APIView):
             400: {"description": "Validation error or subscription not in correct state."},
             500: {"description": "Gateway error."},
         },
-        tags=["Payments"],
-        auth=["jwtAuth"],
+        tags=["Payments"]
     )
     def post(self, request: Request) -> Response:
         subscription_id    = request.data.get("subscription_id")
@@ -469,8 +466,7 @@ class NombaRenewalChargeView(APIView):
             },
             400: {"description": "Missing or invalid subscription_id, or business rule violation."},
         },
-        tags=["Payments"],
-        auth=["jwtAuth"],
+        tags=["Payments"]
     )
     def post(self, request: Request) -> Response:
         subscription_id = request.data.get("subscription_id")
@@ -536,8 +532,7 @@ class DunningFinalFailureView(APIView):
             400: {"description": "Missing subscription identifier parameters."},
             404: {"description": "Target subscription reference does not exist contextually."},
         },
-        tags=["Payments"],
-        auth=["jwtAuth"],
+        tags=["Payments"]
     )
     def post(self, request):
         subscription_id = request.data.get("subscription_id")

@@ -19,7 +19,6 @@ from django.contrib.auth import authenticate
 from django.utils import timezone
 from datetime import timedelta
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
-from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from accounts.permissions import IsSuperAdmin, IsPartnerAdmin, IsCustomer
 from core.throttles import IPRateThrottle, PartnerRateThrottle
