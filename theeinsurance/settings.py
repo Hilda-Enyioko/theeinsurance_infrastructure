@@ -185,10 +185,10 @@ CORS_ALLOWED_ORIGINS = [
     "https://mock-insurance-customer-portal.vercel.app",
 ]
 
-CORS_ALLOWED_HEADERS = list(default_headers) + [
+CORS_ALLOW_HEADERS = list(default_headers) + [
     "x-partner-key",
 ]
-print("CORS_ALLOWED_HEADERS =", CORS_ALLOWED_HEADERS)
+print("CORS_ALLOWED_HEADERS =", CORS_ALLOW_HEADERS)
 
 CORS_ALLOW_CREDENTIALS = True
 
