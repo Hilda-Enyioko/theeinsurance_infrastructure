@@ -115,6 +115,7 @@ class InsurancePlanDetailView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
+        operation_id="plans_retrieve_by_id",
         summary="Retrieve an active plan detail",
         responses={
             200: InsurancePlanSerializer,
@@ -208,6 +209,7 @@ class ProviderPlanDetailView(APIView):
             return None
 
     @extend_schema(
+        operation_id="partner_plans_retrieve_by_id",
         summary="Provider Admin: Retrieve a managed plan details",
         responses={
             200: InsurancePlanSerializer,

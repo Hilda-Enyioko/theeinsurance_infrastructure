@@ -198,7 +198,7 @@ class ClaimDocumentUploadView(APIView):
         },
         responses={
             200: inline_serializer(
-                name="ClaimDocumentsChecklistResponse",
+                name="ClaimDocumentsUploadResponse",
                 fields={
                     "required_documents": serializers.ListField(child=serializers.CharField()),
                     "uploaded_documents": ClaimDocumentSerializer(many=True),

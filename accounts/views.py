@@ -113,7 +113,9 @@ class PartnerKYCView(APIView):
     @extend_schema(
         summary="Submit Partner KYC",
         description="Allows corporate administrators to upload operational documentation for corporate review.",
-        request=PartnerKYCSerializer,
+        request={
+            "multipart/form-data": PartnerKYCSerializer,
+        },
         responses={
             201: {
                 "type": "object",
@@ -230,7 +232,9 @@ class CustomerKYCView(APIView):
     @extend_schema(
         summary="Submit Customer KYC",
         description="Allows registered consumers to submit required verification and identification metrics.",
-        request=CustomerKYCSerializer,
+        request={
+            "multipart/form-data": CustomerKYCSerializer,
+        },
         responses={
             201: {
                 "type": "object",

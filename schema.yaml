@@ -38,15 +38,9 @@ paths:
       - Customer Management
       requestBody:
         content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CustomerKYC'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/CustomerKYC'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/CustomerKYC'
+              $ref: '#/components/schemas/CustomerKYCRequest'
         required: true
       security:
       - jwtAuth
@@ -86,13 +80,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Login'
+              $ref: '#/components/schemas/LoginRequest'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/Login'
+              $ref: '#/components/schemas/LoginRequest'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/Login'
+              $ref: '#/components/schemas/LoginRequest'
         required: true
       security:
       - jwtAuth: []
@@ -150,13 +144,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CustomerRegistration'
+              $ref: '#/components/schemas/CustomerRegistrationRequest'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/CustomerRegistration'
+              $ref: '#/components/schemas/CustomerRegistrationRequest'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/CustomerRegistration'
+              $ref: '#/components/schemas/CustomerRegistrationRequest'
         required: true
       security:
       - jwtAuth: []
@@ -332,13 +326,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ClaimCreate'
+              $ref: '#/components/schemas/ClaimCreateRequest'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/ClaimCreate'
+              $ref: '#/components/schemas/ClaimCreateRequest'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/ClaimCreate'
+              $ref: '#/components/schemas/ClaimCreateRequest'
         required: true
       security:
       - jwtAuth
@@ -478,7 +472,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ClaimDocumentsChecklistResponse'
+                $ref: '#/components/schemas/ClaimDocumentsUploadResponse'
           description: ''
         '400':
           content:
@@ -815,13 +809,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PatchedClaimReview'
+              $ref: '#/components/schemas/PatchedClaimReviewRequest'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/PatchedClaimReview'
+              $ref: '#/components/schemas/PatchedClaimReviewRequest'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/PatchedClaimReview'
+              $ref: '#/components/schemas/PatchedClaimReviewRequest'
       security:
       - jwtAuth
       responses:
@@ -886,15 +880,9 @@ paths:
       - Partner Management
       requestBody:
         content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PartnerKYC'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/PartnerKYC'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/PartnerKYC'
+              $ref: '#/components/schemas/PartnerKYCRequest'
         required: true
       security:
       - jwtAuth
@@ -926,13 +914,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PartnerOnboarding'
+              $ref: '#/components/schemas/PartnerOnboardingRequest'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/PartnerOnboarding'
+              $ref: '#/components/schemas/PartnerOnboardingRequest'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/PartnerOnboarding'
+              $ref: '#/components/schemas/PartnerOnboardingRequest'
         required: true
       security:
       - jwtAuth: []
@@ -995,13 +983,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/InsurancePlanCreate'
+              $ref: '#/components/schemas/InsurancePlanCreateRequest'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/InsurancePlanCreate'
+              $ref: '#/components/schemas/InsurancePlanCreateRequest'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/InsurancePlanCreate'
+              $ref: '#/components/schemas/InsurancePlanCreateRequest'
         required: true
       security:
       - jwtAuth: []
@@ -1017,7 +1005,7 @@ paths:
           description: Validation error data.
   /api/v1/partner/plans/{plan_id}/:
     get:
-      operationId: partner_plans_retrieve_2
+      operationId: partner_plans_retrieve_by_id
       description: |-
         Provider admins retrieve, update, or soft-delete their own plans.
         IsProviderAdmin enforces role at the class level.
@@ -1064,13 +1052,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PatchedInsurancePlanCreate'
+              $ref: '#/components/schemas/PatchedInsurancePlanCreateRequest'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/PatchedInsurancePlanCreate'
+              $ref: '#/components/schemas/PatchedInsurancePlanCreateRequest'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/PatchedInsurancePlanCreate'
+              $ref: '#/components/schemas/PatchedInsurancePlanCreateRequest'
       security:
       - jwtAuth: []
       - jwtAuth: []
@@ -1258,13 +1246,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/InitiatePayment'
+              $ref: '#/components/schemas/InitiatePaymentRequest'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/InitiatePayment'
+              $ref: '#/components/schemas/InitiatePaymentRequest'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/InitiatePayment'
+              $ref: '#/components/schemas/InitiatePaymentRequest'
         required: true
       security:
       - jwtAuth
@@ -1542,7 +1530,7 @@ paths:
           description: Filtered list of insurance plans.
   /api/v1/plans/{plan_id}/:
     get:
-      operationId: plans_retrieve_2
+      operationId: plans_retrieve_by_id
       description: |-
         Public endpoint — single plan detail.
         Distributor access check is enforced at queryset level.
@@ -1631,13 +1619,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Login'
+              $ref: '#/components/schemas/LoginRequest'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/Login'
+              $ref: '#/components/schemas/LoginRequest'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/Login'
+              $ref: '#/components/schemas/LoginRequest'
         required: true
       security:
       - jwtAuth: []
@@ -1759,13 +1747,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PatchedClaimReview'
+              $ref: '#/components/schemas/PatchedClaimReviewRequest'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/PatchedClaimReview'
+              $ref: '#/components/schemas/PatchedClaimReviewRequest'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/PatchedClaimReview'
+              $ref: '#/components/schemas/PatchedClaimReviewRequest'
       security:
       - jwtAuth
       responses:
@@ -2405,13 +2393,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PolicySubscriptionCreate'
+              $ref: '#/components/schemas/PolicySubscriptionCreateRequest'
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/PolicySubscriptionCreate'
+              $ref: '#/components/schemas/PolicySubscriptionCreateRequest'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/PolicySubscriptionCreate'
+              $ref: '#/components/schemas/PolicySubscriptionCreateRequest'
         required: true
       security:
       - jwtAuth: []
@@ -2598,7 +2586,7 @@ components:
       - subscription
       - theeinsurance_review_note
       - updated_at
-    ClaimCreate:
+    ClaimCreateRequest:
       type: object
       properties:
         subscription_id:
@@ -2611,6 +2599,7 @@ components:
           format: date
         incident_description:
           type: string
+          minLength: 1
         claimed_amount:
           type: string
           format: decimal
@@ -2643,6 +2632,25 @@ components:
       - id
       - uploaded_at
     ClaimDocumentsChecklistResponse:
+      type: object
+      properties:
+        required_documents:
+          type: array
+          items:
+            type: string
+        uploaded_documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClaimDocument'
+        missing_documents:
+          type: array
+          items:
+            type: string
+      required:
+      - missing_documents
+      - required_documents
+      - uploaded_documents
+    ClaimDocumentsUploadResponse:
       type: object
       properties:
         required_documents:
@@ -2697,7 +2705,7 @@ components:
           format: uuid
           readOnly: true
         id_type:
-          $ref: '#/components/schemas/IdTypeEnum'
+          $ref: '#/components/schemas/CustomerKYCTypeEnum'
         id_number:
           type: string
           maxLength: 50
@@ -2709,7 +2717,7 @@ components:
           format: uri
         status:
           allOf:
-          - $ref: '#/components/schemas/StatusEf1Enum'
+          - $ref: '#/components/schemas/KYCReviewStatusEnum'
           readOnly: true
         submitted_at:
           type: string
@@ -2722,27 +2730,66 @@ components:
       - id_type
       - status
       - submitted_at
-    CustomerRegistration:
+    CustomerKYCRequest:
+      type: object
+      properties:
+        id_type:
+          $ref: '#/components/schemas/CustomerKYCTypeEnum'
+        id_number:
+          type: string
+          minLength: 1
+          maxLength: 50
+        id_document:
+          type: string
+          format: binary
+        selfie:
+          type: string
+          format: binary
+      required:
+      - id_document
+      - id_number
+      - id_type
+    CustomerKYCTypeEnum:
+      enum:
+      - nin
+      - bvn
+      - passport
+      - drivers_licence
+      - voters_card
+      type: string
+      description: |-
+        * `nin` - National Identity Number
+        * `bvn` - Bank Verification Number
+        * `passport` - International Passport
+        * `drivers_licence` - Driver's Licence
+        * `voters_card` - Voter's Card
+    CustomerRegistrationRequest:
       type: object
       properties:
         email:
           type: string
           format: email
+          minLength: 1
           maxLength: 254
         password:
           type: string
           writeOnly: true
+          minLength: 1
         confirm_password:
           type: string
           writeOnly: true
+          minLength: 1
         first_name:
           type: string
+          minLength: 1
           maxLength: 100
         last_name:
           type: string
+          minLength: 1
           maxLength: 100
         phone_number:
           type: string
+          minLength: 1
         date_of_birth:
           type: string
           format: date
@@ -2750,6 +2797,7 @@ components:
           $ref: '#/components/schemas/GenderEnum'
         address:
           type: string
+          minLength: 1
       required:
       - address
       - confirm_password
@@ -2798,21 +2846,7 @@ components:
         * `male` - Male
         * `female` - Female
         * `other` - Other
-    IdTypeEnum:
-      enum:
-      - nin
-      - bvn
-      - passport
-      - drivers_licence
-      - voters_card
-      type: string
-      description: |-
-        * `nin` - National Identity Number
-        * `bvn` - Bank Verification Number
-        * `passport` - International Passport
-        * `drivers_licence` - Driver's Licence
-        * `voters_card` - Voter's Card
-    InitiatePayment:
+    InitiatePaymentRequest:
       type: object
       description: |-
         Validates a payment initiation request and creates a PENDING Transaction.
@@ -2893,11 +2927,12 @@ components:
       - provider
       - provider_name
       - updated_at
-    InsurancePlanCreate:
+    InsurancePlanCreateRequest:
       type: object
       properties:
         name:
           type: string
+          minLength: 1
           maxLength: 500
         category:
           type: string
@@ -2918,6 +2953,7 @@ components:
           minimum: -2147483648
         description:
           type: string
+          minLength: 1
         is_active:
           type: boolean
       required:
@@ -2928,15 +2964,27 @@ components:
       - duration_months
       - name
       - premium
-    Login:
+    KYCReviewStatusEnum:
+      enum:
+      - pending
+      - approved
+      - rejected
+      type: string
+      description: |-
+        * `pending` - Pending Review
+        * `approved` - Approved
+        * `rejected` - Rejected
+    LoginRequest:
       type: object
       properties:
         email:
           type: string
           format: email
+          minLength: 1
         password:
           type: string
           writeOnly: true
+          minLength: 1
       required:
       - email
       - password
@@ -2967,7 +3015,7 @@ components:
           format: uri
         status:
           allOf:
-          - $ref: '#/components/schemas/StatusEf1Enum'
+          - $ref: '#/components/schemas/KYCReviewStatusEnum'
           readOnly: true
         submitted_at:
           type: string
@@ -2981,14 +3029,44 @@ components:
       - status
       - submitted_at
       - tax_identification_number
-    PartnerOnboarding:
+    PartnerKYCRequest:
+      type: object
+      properties:
+        rc_number:
+          type: string
+          minLength: 1
+          maxLength: 20
+        naicom_licence_number:
+          type: string
+          maxLength: 50
+        tax_identification_number:
+          type: string
+          minLength: 1
+          maxLength: 20
+        cac_certificate:
+          type: string
+          format: binary
+        naicom_licence_doc:
+          type: string
+          format: binary
+        proof_of_address:
+          type: string
+          format: binary
+      required:
+      - cac_certificate
+      - proof_of_address
+      - rc_number
+      - tax_identification_number
+    PartnerOnboardingRequest:
       type: object
       properties:
         partner_name:
           type: string
+          minLength: 1
           maxLength: 255
         partner_slug:
           type: string
+          minLength: 1
           maxLength: 100
         partner_type:
           $ref: '#/components/schemas/PartnerTypeEnum'
@@ -3000,18 +3078,23 @@ components:
         email:
           type: string
           format: email
+          minLength: 1
         first_name:
           type: string
+          minLength: 1
           maxLength: 100
         last_name:
           type: string
+          minLength: 1
           maxLength: 100
         password:
           type: string
           writeOnly: true
+          minLength: 1
         confirm_password:
           type: string
           writeOnly: true
+          minLength: 1
       required:
       - confirm_password
       - email
@@ -3029,7 +3112,7 @@ components:
       description: |-
         * `provider` - Insurance Provider
         * `distributor` - Distribution Partner
-    PatchedClaimReview:
+    PatchedClaimReviewRequest:
       type: object
       description: Used by TheeInsurance staff and provider admins to review claims.
       properties:
@@ -3041,11 +3124,12 @@ components:
           type: string
           format: decimal
           pattern: ^-?\d{0,18}(?:\.\d{0,2})?$
-    PatchedInsurancePlanCreate:
+    PatchedInsurancePlanCreateRequest:
       type: object
       properties:
         name:
           type: string
+          minLength: 1
           maxLength: 500
         category:
           type: string
@@ -3066,6 +3150,7 @@ components:
           minimum: -2147483648
         description:
           type: string
+          minLength: 1
         is_active:
           type: boolean
     PaymentStatusEnum:
@@ -3203,7 +3288,7 @@ components:
       - start_date
       - status
       - updated_at
-    PolicySubscriptionCreate:
+    PolicySubscriptionCreateRequest:
       type: object
       properties:
         plan_id:
@@ -3216,16 +3301,6 @@ components:
       required:
       - plan_id
       - start_date
-    StatusEf1Enum:
-      enum:
-      - pending
-      - approved
-      - rejected
-      type: string
-      description: |-
-        * `pending` - Pending Review
-        * `approved` - Approved
-        * `rejected` - Rejected
     SubscriptionStatusEnum:
       enum:
       - active

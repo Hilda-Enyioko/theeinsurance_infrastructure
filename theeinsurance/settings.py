@@ -261,6 +261,7 @@ SPECTACULAR_SETTINGS = {
     },
     "OPERATION_ID_NAMING_STRATEGY": "operation_id",
     "SCHEMA_PATH_PREFIX": r"/api/v[0-9]",
+    "COMPONENT_SPLIT_REQUEST": True,
     "ENUM_NAME_OVERRIDES": {
         "ClaimStatusEnum": "claims.models.Claim.STATUS_CHOICES",
         "SubscriptionStatusEnum": "subscriptions.models.PolicySubscription.STATUS_CHOICES",
@@ -268,6 +269,8 @@ SPECTACULAR_SETTINGS = {
         "InsuranceCategoryEnum": "plans.models.InsuranceCategory.CATEGORY_CHOICES",
         "SubscriptionDocumentTypeChoicesEnum": "subscriptions.models.SubscriptionDocument.DOCUMENT_TYPE_CHOICES",
         "CallbackLogStatusEnum": "payments.models.CallbackLog.Status",
+        "KYCReviewStatusEnum": "accounts.models.CustomerKYC.STATUS_CHOICES",  # covers both CustomerKYC and PartnerKYC
+        "CustomerKYCTypeEnum": "accounts.models.CustomerKYC.ID_TYPE_CHOICES",
     },
 }
 
