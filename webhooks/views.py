@@ -1,6 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 from accounts.permissions import IsServiceAccount
 from core.models import Webhook, WebhookEvent, ServiceWebhookEndpoint
 
@@ -16,6 +17,11 @@ def get_partner_from_user(user):
 class WebhookListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="List all webhooks",
+        description="Retrieve a list of all webhooks configured for the authenticated partner account.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         partner = get_partner_from_user(request.user)
         if not partner:
@@ -34,6 +40,25 @@ class WebhookListCreateView(APIView):
         ]
         return Response({"webhooks": data})
 
+    @extend_schema(
+        summary="Register a new webhook",
+        description="Create a new webhook endpoint with specific event subscriptions for the authenticated partner.",
+        request={
+            "application/json": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "format": "uri", "example": "https://example.com/webhook"},
+                    "events": {"type": "array", "items": {"type": "string"}, "example": ["payment.successful"]}
+                },
+                "required": ["url", "events"]
+            }
+        },
+        responses={
+            201: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            403: OpenApiTypes.OBJECT
+        }
+    )
     def post(self, request):
         partner = get_partner_from_user(request.user)
         if not partner:
@@ -79,6 +104,11 @@ class WebhookDetailView(APIView):
         except Webhook.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="Retrieve webhook details",
+        description="Fetch detailed configuration for a specific webhook by ID.",
+        responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT}
+    )
     def get(self, request, webhook_id):
         partner = get_partner_from_user(request.user)
         if not partner:
@@ -96,6 +126,21 @@ class WebhookDetailView(APIView):
             "created_at": webhook.created_at,
         })
 
+    @extend_schema(
+        summary="Partially update a webhook",
+        description="Update a webhook's URL, active status, or its subscribed events list.",
+        request={
+            "application/json": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "format": "uri"},
+                    "is_active": {"type": "boolean"},
+                    "events": {"type": "array", "items": {"type": "string"}}
+                }
+            }
+        },
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT}
+    )
     def patch(self, request, webhook_id):
         partner = get_partner_from_user(request.user)
         if not partner:
@@ -129,6 +174,11 @@ class WebhookDetailView(APIView):
         webhook.save()
         return Response({"message": "Webhook updated successfully."})
 
+    @extend_schema(
+        summary="Delete a webhook",
+        description="Permanently remove a webhook configuration.",
+        responses={204: None, 404: OpenApiTypes.OBJECT}
+    )
     def delete(self, request, webhook_id):
         partner = get_partner_from_user(request.user)
         if not partner:
@@ -143,23 +193,13 @@ class WebhookDetailView(APIView):
 
 
 class ServiceWebhookRegisterView(APIView):
-    """
-    GET/POST /webhooks/register/
-
-    Lets a service account (n8n) register or update the callback URLs it
-    wants theeinsurance to call for payment lifecycle events.
-    n8n can update these itself without a redeploy.
-
-    POST body:
-        {
-          "webhooks": [
-            {"event": "payment.successful", "url": "https://n8n.internal/webhook/payment-success"},
-            {"event": "charge.failed", "url": "https://n8n.internal/webhook/charge-failed"}
-          ]
-        }
-    """
     permission_classes = [IsServiceAccount]
 
+    @extend_schema(
+        summary="List service account webhooks",
+        description="Retrieve all webhook configurations specifically registered for the calling service account (e.g., n8n).",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         endpoints = ServiceWebhookEndpoint.objects.filter(service_account=request.user)
         return Response({
@@ -169,6 +209,30 @@ class ServiceWebhookRegisterView(APIView):
             ]
         })
 
+    @extend_schema(
+        summary="Register or update service webhooks",
+        description="Upsert webhook URLs for payment lifecycle events driven by internal service accounts.",
+        request={
+            "application/json": {
+                "type": "object",
+                "properties": {
+                    "webhooks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "event": {"type": "string", "example": "payment.successful"},
+                                "url": {"type": "string", "format": "uri", "example": "https://n8n.internal/webhook/payment-success"}
+                            },
+                            "required": ["event", "url"]
+                        }
+                    }
+                },
+                "required": ["webhooks"]
+            }
+        },
+        responses={201: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         registrations = request.data.get("webhooks", [])
         if not registrations:

@@ -1,5 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework import status
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 from webhooks.services import dispatch_webhook
 from accounts.permissions import IsSuperAdmin, IsProviderAdmin, IsCustomer
 
@@ -31,6 +33,16 @@ class CustomerClaimListCreateView(APIView):
     permission_classes = [IsCustomer]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="List Customer Claims",
+        description="Retrieves a list of all insurance claims submitted by the authenticated customer for the active partner.",
+        responses={
+            200: ClaimSerializer(many=True),
+            404: {"description": "Customer profile not found for this partner context."},
+        },
+        tags=["Customer Claims"],
+        auth=["jwtAuth"],
+    )
     def get(self, request):
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
@@ -41,6 +53,30 @@ class CustomerClaimListCreateView(APIView):
         serializer = ClaimSerializer(claims, many=True)
         return Response({"claims": serializer.data})
 
+    @extend_schema(
+        summary="Submit New Claim",
+        description="Submits a new insurance claim against an active policy subscription. Returns required document types for the specific claim.",
+        request=ClaimCreateSerializer,
+        responses={
+            201: {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "example": "Claim submitted. Please upload supporting documents."},
+                    "claim_id": {"type": "string", "format": "uuid"},
+                    "claim_reference": {"type": "string", "example": "CLM-12345678"},
+                    "required_documents": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "example": ["MEDICAL_REPORT", "RECEIPT"]
+                    },
+                }
+            },
+            400: {"description": "Validation error or subscription mismatch."},
+            404: {"description": "Customer profile or Subscription context not found."},
+        },
+        tags=["Customer Claims"],
+        auth=["jwtAuth"],
+    )
     def post(self, request):
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
@@ -100,6 +136,19 @@ class CustomerClaimDetailView(APIView):
     permission_classes = [IsCustomer]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Get Customer Claim Detail",
+        description="Retrieves granular details of a single claim owned by the authenticated customer.",
+        parameters=[
+            OpenApiParameter(name="claim_id", type=OpenApiTypes.UUID, location=OpenApiParameter.PATH, description="UUID of the claim")
+        ],
+        responses={
+            200: ClaimSerializer,
+            404: {"description": "Claim or customer profile context not found."},
+        },
+        tags=["Customer Claims"],
+        auth=["jwtAuth"],
+    )
     def get(self, request, claim_id):
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
@@ -124,6 +173,44 @@ class ClaimDocumentUploadView(APIView):
     permission_classes = [IsCustomer]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Upload Claim Document",
+        description="Uploads a required multi-part file attachment for a pending claim. Only allowed while claim is in 'submitted' status.",
+        parameters=[
+            OpenApiParameter(name="claim_id", type=OpenApiTypes.UUID, location=OpenApiParameter.PATH, description="UUID of the claim")
+        ],
+        request={
+            "multipart/form-data": {
+                "type": "object",
+                "required": ["document_type", "file"],
+                "properties": {
+                    "document_type": {
+                        "type": "string",
+                        "description": "The exact document classification type identifier."
+                    },
+                    "file": {
+                        "type": "string",
+                        "format": "binary",
+                        "description": "File attachment payload."
+                    }
+                }
+            }
+        },
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "example": "Document uploaded successfully."},
+                    "missing_documents": {"type": "array", "items": {"type": "string"}},
+                    "all_documents_uploaded": {"type": "boolean"},
+                }
+            },
+            400: {"description": "Missing file elements or document validation type failure."},
+            404: {"description": "Claim not found or closed for documentation entries."},
+        },
+        tags=["Claim Documents"],
+        auth=["jwtAuth"],
+    )
     def post(self, request, claim_id):
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
@@ -181,6 +268,26 @@ class ClaimDocumentUploadView(APIView):
             "all_documents_uploaded": len(missing_docs) == 0,
         })
 
+    @extend_schema(
+        summary="View Uploaded Claim Documents Checklist",
+        description="Fetches a list of uploaded supporting elements, required checklist guidelines, and remaining documents for processing validation.",
+        parameters=[
+            OpenApiParameter(name="claim_id", type=OpenApiTypes.UUID, location=OpenApiParameter.PATH, description="UUID of the claim")
+        ],
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "required_documents": {"type": "array", "items": {"type": "string"}},
+                    "uploaded_documents": ClaimDocumentSerializer(many=True),
+                    "missing_documents": {"type": "array", "items": {"type": "string"}},
+                }
+            },
+            404: {"description": "Claim contextual workspace profile missing."},
+        },
+        tags=["Claim Documents"],
+        auth=["jwtAuth"],
+    )
     def get(self, request, claim_id):
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
@@ -213,6 +320,17 @@ class ProviderClaimListView(APIView):
     permission_classes = [IsProviderAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Provider List Claims",
+        description="Enables authorized provider insurance account administrators to view claims targeted at their specific products.",
+        parameters=[
+            OpenApiParameter(name="status", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter claims by current workflow status state", required=False),
+            OpenApiParameter(name="claim_type", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter claims by explicit category type identifier", required=False),
+        ],
+        responses={200: ClaimSerializer(many=True)},
+        tags=["Provider Claim Management"],
+        auth=["jwtAuth"],
+    )
     def get(self, request):
         partner = get_partner_from_user(request.user)
         claims = Claim.objects.filter(provider=partner)
@@ -238,6 +356,19 @@ class ProviderClaimReviewView(APIView):
     permission_classes = [IsProviderAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Provider Claim Details View",
+        description="Fetches a dedicated isolated operational view summary of an inbound claim for underwriting assessment.",
+        parameters=[
+            OpenApiParameter(name="claim_id", type=OpenApiTypes.UUID, location=OpenApiParameter.PATH, description="UUID of target claim")
+        ],
+        responses={
+            200: ClaimSerializer,
+            404: {"description": "Claim reference data not found within provider administration domain."},
+        },
+        tags=["Provider Claim Management"],
+        auth=["jwtAuth"],
+    )
     def get(self, request, claim_id):
         partner = get_partner_from_user(request.user)
 
@@ -249,6 +380,28 @@ class ProviderClaimReviewView(APIView):
         serializer = ClaimSerializer(claim)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="Provider Claim Review Action Evaluation",
+        description="Allows a provider underwriting expert to approve, reject, or comment on an active claim entry.",
+        parameters=[
+            OpenApiParameter(name="claim_id", type=OpenApiTypes.UUID, location=OpenApiParameter.PATH, description="UUID of target claim")
+        ],
+        request=ClaimReviewSerializer,
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "example": "Claim approved."},
+                    "claim_reference": {"type": "string", "example": "CLM-48218414"},
+                    "status": {"type": "string", "example": "approved"},
+                }
+            },
+            400: {"description": "Invalid decision metadata structures or invalid input constraints."},
+            404: {"description": "Claim context target key missing."},
+        },
+        tags=["Provider Claim Management"],
+        auth=["jwtAuth"],
+    )
     def patch(self, request, claim_id):
         partner = get_partner_from_user(request.user)
 
@@ -300,6 +453,16 @@ class StaffClaimListView(APIView):
     permission_classes = [IsSuperAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Staff Core General List Claims",
+        description="Allows platform super administrators to browse claims entries filed across the ecosystem matrix.",
+        parameters=[
+            OpenApiParameter(name="status", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter claims by processing status", required=False)
+        ],
+        responses={200: ClaimSerializer(many=True)},
+        tags=["TheeInsurance Platform Core Operations"],
+        auth=["jwtAuth"],
+    )
     def get(self, request):
         claims = Claim.objects.all()
 
@@ -318,6 +481,19 @@ class StaffClaimReviewView(APIView):
     permission_classes = [IsSuperAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Staff Core Single Detail Fetch",
+        description="Retrieves any single ecosystem claim entry profile mapping across partners.",
+        parameters=[
+            OpenApiParameter(name="claim_id", type=OpenApiTypes.UUID, location=OpenApiParameter.PATH, description="UUID of operational claim target")
+        ],
+        responses={
+            200: ClaimSerializer,
+            404: {"description": "Claim reference key not located in global records mapping."},
+        },
+        tags=["TheeInsurance Platform Core Operations"],
+        auth=["jwtAuth"],
+    )
     def get(self, request, claim_id):
         try:
             claim = Claim.objects.get(id=claim_id)
@@ -327,6 +503,28 @@ class StaffClaimReviewView(APIView):
         serializer = ClaimSerializer(claim)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="Staff Central Core Initial Processing Review",
+        description="Allows platform core specialists to triage claim parameters or execute priority status structural updates before deep carrier routing validation cycles occur.",
+        parameters=[
+            OpenApiParameter(name="claim_id", type=OpenApiTypes.UUID, location=OpenApiParameter.PATH, description="UUID of operational claim target")
+        ],
+        request=ClaimReviewSerializer,
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "example": "Claim updated to under_review."},
+                    "claim_reference": {"type": "string", "example": "CLM-77112239"},
+                    "status": {"type": "string", "example": "under_review"},
+                }
+            },
+            400: {"description": "Triage input structural validation exception."},
+            404: {"description": "Claim entry identifier element lookup mismatch."},
+        },
+        tags=["TheeInsurance Platform Core Operations"],
+        auth=["jwtAuth"],
+    )
     def patch(self, request, claim_id):
         try:
             claim = Claim.objects.get(id=claim_id)
