@@ -190,6 +190,8 @@ CORS_ALLOWED_HEADERS = [
     'x-partner-key',
 ]
 
+CORS_ALLOW_CREDENTIALS = True
+
 AUTH_USER_MODEL = "accounts.CustomUser"
 
 MEDIA_URL = '/media/'
