@@ -862,7 +862,8 @@ class StaffServiceAccountRevokeView(APIView):
                 required=True,
                 description="The target API client_id hash key string."
             )
-        ],
+        ],       
+        request=None,
         responses={
             200: {"type": "object", "properties": {"detail": {"type": "string"}}},
             404: {"description": "Target identifier string matched no active record."}

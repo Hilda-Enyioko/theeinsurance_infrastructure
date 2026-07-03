@@ -1,9 +1,9 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
+from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter, OpenApiTypes
 from webhooks.services import dispatch_webhook
 from accounts.permissions import IsSuperAdmin, IsProviderAdmin, IsCustomer
+from rest_framework import serializers
 
 from .models import Claim, ClaimDocument, REQUIRED_CLAIM_DOCUMENTS
 from .serializers import (
@@ -197,14 +197,14 @@ class ClaimDocumentUploadView(APIView):
             }
         },
         responses={
-            200: {
-                "type": "object",
-                "properties": {
-                    "message": {"type": "string", "example": "Document uploaded successfully."},
-                    "missing_documents": {"type": "array", "items": {"type": "string"}},
-                    "all_documents_uploaded": {"type": "boolean"},
+            200: inline_serializer(
+                name="ClaimDocumentsChecklistResponse",
+                fields={
+                    "required_documents": serializers.ListField(child=serializers.CharField()),
+                    "uploaded_documents": ClaimDocumentSerializer(many=True),
+                    "missing_documents": serializers.ListField(child=serializers.CharField()),
                 }
-            },
+            ),
             400: {"description": "Missing file elements or document validation type failure."},
             404: {"description": "Claim not found or closed for documentation entries."},
         },
@@ -275,14 +275,14 @@ class ClaimDocumentUploadView(APIView):
             OpenApiParameter(name="claim_id", type=OpenApiTypes.UUID, location=OpenApiParameter.PATH, description="UUID of the claim")
         ],
         responses={
-            200: {
-                "type": "object",
-                "properties": {
-                    "required_documents": {"type": "array", "items": {"type": "string"}},
+            200: inline_serializer(
+                name="ClaimDocumentsChecklistResponse",
+                fields={
+                    "required_documents": serializers.ListField(child=serializers.CharField()),
                     "uploaded_documents": ClaimDocumentSerializer(many=True),
-                    "missing_documents": {"type": "array", "items": {"type": "string"}},
+                    "missing_documents": serializers.ListField(child=serializers.CharField()),
                 }
-            },
+            ),
             404: {"description": "Claim contextual workspace profile missing."},
         },
         tags=["Claim Documents"],

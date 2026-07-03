@@ -1,0 +1,3315 @@
+openapi: 3.0.3
+info:
+  title: TheeInsurance API
+  version: 1.0.0
+  description: A headless, API-first insurance distribution platform. Companies integrate
+    TheeInsurance into their products via API and offer insurance plans to their customers
+    without building the insurance layer themselves.
+paths:
+  /api/v1/auth/kyc/:
+    get:
+      operationId: auth_kyc_retrieve
+      description: Allows an authenticated consumer to inspect their background check
+        and identity records inside the scope of the current partner.
+      summary: Retrieve Customer KYC Details
+      tags:
+      - Customer Management
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerKYC'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Customer profile or KYC records not found.
+          description: ''
+    post:
+      operationId: auth_kyc_create
+      description: Allows registered consumers to submit required verification and
+        identification metrics.
+      summary: Submit Customer KYC
+      tags:
+      - Customer Management
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerKYC'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CustomerKYC'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CustomerKYC'
+        required: true
+      security:
+      - jwtAuth
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: KYC already submitted or validation errors.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Customer profile not found within the current tenant
+                  scope.
+          description: ''
+  /api/v1/auth/login/:
+    post:
+      operationId: auth_login_create
+      description: Verifies credentials for customers and partner admins, returning
+        signed authentication payloads appended with role authorizations and multi-tenant
+        scoping claims.
+      summary: Shared Portal Authentication Login
+      tags:
+      - Authentication
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Login'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Login'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Login'
+        required: true
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens:
+                    type: object
+                    properties:
+                      refresh:
+                        type: string
+                      access:
+                        type: string
+                  role:
+                    type: string
+                  email:
+                    type: string
+                    format: email
+                  first_name:
+                    type: string
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Validation errors.
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                description: Invalid email or password.
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                description: Account is inactive.
+          description: ''
+  /api/v1/auth/register/:
+    post:
+      operationId: auth_register_create
+      description: Uses tenant context attached to the request (via upstream middleware
+        parsing) to bind the newly registered customer account to the parent organization.
+      summary: Customer Registration
+      tags:
+      - Customer Management
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerRegistration'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CustomerRegistration'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CustomerRegistration'
+        required: true
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  tokens:
+                    type: object
+                    properties:
+                      refresh:
+                        type: string
+                      access:
+                        type: string
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Validation errors.
+          description: ''
+  /api/v1/auth/service-account/token/:
+    post:
+      operationId: auth_service_account_token_create
+      description: Client-credentials authentication style token mapping workspace.
+        Handshakes inbound script applications using signed tokens back-dropped from
+        initial custom-issued out-of-band credential mappings.
+      summary: Service Account M2M Token Exchange
+      tags:
+      - Authentication
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - client_id
+              - client_secret
+              properties:
+                client_id:
+                  type: string
+                client_secret:
+                  type: string
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access:
+                    type: string
+                  refresh:
+                    type: string
+                  expires_in:
+                    type: integer
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Missing client credentials parameters.
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                description: Invalid secret pairing credentials, or service node disabled.
+          description: ''
+  /api/v1/auth/token/refresh/:
+    post:
+      operationId: auth_token_refresh_create
+      description: Validates submitted refresh states to hand out fresh access hashes,
+        shielding downstream views from re-authentication requirements.
+      summary: Refresh Access Token
+      tags:
+      - Authentication
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - refresh
+              properties:
+                refresh:
+                  type: string
+                  description: The refresh token string.
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access:
+                    type: string
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Refresh token is missing.
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                description: Token is invalid or expired.
+          description: ''
+  /api/v1/categories/:
+    get:
+      operationId: categories_retrieve
+      description: |-
+        Public. Returns all active insurance categories.
+        Protected at middleware level via X-Partner-Key.
+      summary: List active insurance categories
+      tags:
+      - categories
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      - {}
+      responses:
+        '200':
+          description: A list of active categories.
+  /api/v1/claims/:
+    get:
+      operationId: claims_list
+      description: Retrieves a list of all insurance claims submitted by the authenticated
+        customer for the active partner.
+      summary: List Customer Claims
+      tags:
+      - Customer Claims
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Claim'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Customer profile not found for this partner context.
+          description: ''
+    post:
+      operationId: claims_create
+      description: Submits a new insurance claim against an active policy subscription.
+        Returns required document types for the specific claim.
+      summary: Submit New Claim
+      tags:
+      - Customer Claims
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ClaimCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ClaimCreate'
+        required: true
+      security:
+      - jwtAuth
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Claim submitted. Please upload supporting documents.
+                  claim_id:
+                    type: string
+                    format: uuid
+                  claim_reference:
+                    type: string
+                    example: CLM-12345678
+                  required_documents:
+                    type: array
+                    items:
+                      type: string
+                    example:
+                    - MEDICAL_REPORT
+                    - RECEIPT
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Validation error or subscription mismatch.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Customer profile or Subscription context not found.
+          description: ''
+  /api/v1/claims/{claim_id}/:
+    get:
+      operationId: claims_retrieve
+      description: Retrieves granular details of a single claim owned by the authenticated
+        customer.
+      summary: Get Customer Claim Detail
+      parameters:
+      - in: path
+        name: claim_id
+        schema:
+          type: string
+          format: uuid
+        description: UUID of the claim
+        required: true
+      tags:
+      - Customer Claims
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Claim'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Claim or customer profile context not found.
+          description: ''
+  /api/v1/claims/{claim_id}/documents/:
+    get:
+      operationId: claims_documents_retrieve
+      description: Fetches a list of uploaded supporting elements, required checklist
+        guidelines, and remaining documents for processing validation.
+      summary: View Uploaded Claim Documents Checklist
+      parameters:
+      - in: path
+        name: claim_id
+        schema:
+          type: string
+          format: uuid
+        description: UUID of the claim
+        required: true
+      tags:
+      - Claim Documents
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimDocumentsChecklistResponse'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Claim contextual workspace profile missing.
+          description: ''
+    post:
+      operationId: claims_documents_create
+      description: Uploads a required multi-part file attachment for a pending claim.
+        Only allowed while claim is in 'submitted' status.
+      summary: Upload Claim Document
+      parameters:
+      - in: path
+        name: claim_id
+        schema:
+          type: string
+          format: uuid
+        description: UUID of the claim
+        required: true
+      tags:
+      - Claim Documents
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - document_type
+              - file
+              properties:
+                document_type:
+                  type: string
+                  description: The exact document classification type identifier.
+                file:
+                  type: string
+                  format: binary
+                  description: File attachment payload.
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimDocumentsChecklistResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Missing file elements or document validation type failure.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Claim not found or closed for documentation entries.
+          description: ''
+  /api/v1/partner/analytics/distributor/subscriptions-trends/:
+    get:
+      operationId: partner_analytics_distributor_subscriptions_trends_retrieve
+      description: Returns month-on-month breakdown of customer conversions and corresponding
+        commissions earned.
+      summary: Get Distributor Facilitation Trends
+      tags:
+      - Analytics - Distributor
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trends:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        month:
+                          type: string
+                          example: 2026-06
+                        count:
+                          type: integer
+                          example: 145
+                        commissions:
+                          type: string
+                          example: '145000.00'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                description: Unauthorized access.
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                description: Permission denied. Requires Distributor Admin privileges.
+          description: ''
+  /api/v1/partner/analytics/distributor/summary/:
+    get:
+      operationId: partner_analytics_distributor_summary_retrieve
+      description: Calculates and returns metrics for the authenticated partner distributor,
+        including total policies sold, commissions earned, user acquisition count,
+        and performance segmented by top insurance providers.
+      summary: Get Distributor Analytics Summary
+      tags:
+      - Analytics - Distributor
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary:
+                    type: object
+                    properties:
+                      total_policies_facilitated:
+                        type: integer
+                        example: 820
+                      total_commissions_earned:
+                        type: string
+                        example: '820000.00'
+                      total_customers:
+                        type: integer
+                        example: 750
+                  top_providers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        provider__name:
+                          type: string
+                          example: Leadway Assurance
+                        total_sold:
+                          type: integer
+                          example: 500
+                  top_plans:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        plan__name:
+                          type: string
+                          example: Third Party Premium
+                        plan__category__name:
+                          type: string
+                          example: Auto
+                        total_sold:
+                          type: integer
+                          example: 380
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                description: Unauthorized access.
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                description: Permission denied. Requires Distributor Admin privileges.
+          description: ''
+  /api/v1/partner/analytics/provider/subscriptions-trends/:
+    get:
+      operationId: partner_analytics_provider_subscriptions_trends_retrieve
+      description: Returns month-on-month aggregations of volumes and revenue generated
+        over time.
+      summary: Get Provider Subscription Trends
+      tags:
+      - Analytics - Provider
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trends:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        month:
+                          type: string
+                          example: 2026-06
+                        count:
+                          type: integer
+                          example: 240
+                        revenue:
+                          type: string
+                          example: '1200000.00'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                description: Unauthorized access.
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                description: Permission denied. Requires Provider Admin privileges.
+          description: ''
+  /api/v1/partner/analytics/provider/summary/:
+    get:
+      operationId: partner_analytics_provider_summary_retrieve
+      description: Calculates and returns aggregated metrics for the authenticated
+        insurance provider, including total revenue, payouts, subscription status
+        breakdown, top-performing plans, and performance across different distributors.
+      summary: Get Provider Analytics Summary
+      tags:
+      - Analytics - Provider
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary:
+                    type: object
+                    properties:
+                      total_policies:
+                        type: integer
+                        example: 1540
+                      total_revenue:
+                        type: string
+                        example: '7700000.00'
+                      total_payout:
+                        type: string
+                        example: '6160000.00'
+                  status_breakdown:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        status:
+                          type: string
+                          example: active
+                        count:
+                          type: integer
+                          example: 1200
+                  top_plans:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        plan__name:
+                          type: string
+                          example: Comprehensive Auto Shield
+                        total_sold:
+                          type: integer
+                          example: 450
+                        revenue:
+                          type: string
+                          example: '2250000.00'
+                  distributor_breakdown:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        distributor__name:
+                          type: string
+                          example: Nomba Finance
+                        total_sold:
+                          type: integer
+                          example: 310
+                        commission:
+                          type: string
+                          example: '310000.00'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                description: Unauthorized access.
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                description: Permission denied. Requires Provider Admin privileges.
+          description: ''
+  /api/v1/partner/claims/:
+    get:
+      operationId: partner_claims_list
+      description: Enables authorized provider insurance account administrators to
+        view claims targeted at their specific products.
+      summary: Provider List Claims
+      parameters:
+      - in: query
+        name: claim_type
+        schema:
+          type: string
+        description: Filter claims by explicit category type identifier
+      - in: query
+        name: status
+        schema:
+          type: string
+        description: Filter claims by current workflow status state
+      tags:
+      - Provider Claim Management
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Claim'
+          description: ''
+  /api/v1/partner/claims/{claim_id}/:
+    get:
+      operationId: partner_claims_retrieve
+      description: Fetches a dedicated isolated operational view summary of an inbound
+        claim for underwriting assessment.
+      summary: Provider Claim Details View
+      parameters:
+      - in: path
+        name: claim_id
+        schema:
+          type: string
+          format: uuid
+        description: UUID of target claim
+        required: true
+      tags:
+      - Provider Claim Management
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Claim'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Claim reference data not found within provider administration
+                  domain.
+          description: ''
+    patch:
+      operationId: partner_claims_partial_update
+      description: Allows a provider underwriting expert to approve, reject, or comment
+        on an active claim entry.
+      summary: Provider Claim Review Action Evaluation
+      parameters:
+      - in: path
+        name: claim_id
+        schema:
+          type: string
+          format: uuid
+        description: UUID of target claim
+        required: true
+      tags:
+      - Provider Claim Management
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedClaimReview'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedClaimReview'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedClaimReview'
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Claim approved.
+                  claim_reference:
+                    type: string
+                    example: CLM-48218414
+                  status:
+                    type: string
+                    example: approved
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Invalid decision metadata structures or invalid input
+                  constraints.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Claim context target key missing.
+          description: ''
+  /api/v1/partner/kyc/:
+    get:
+      operationId: partner_kyc_retrieve
+      description: Allows authenticated corporate administrators to pull down their
+        own current KYC submission state.
+      summary: Retrieve Partner KYC Status
+      tags:
+      - Partner Management
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerKYC'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: No KYC documentation submitted yet.
+          description: ''
+    post:
+      operationId: partner_kyc_create
+      description: Allows corporate administrators to upload operational documentation
+        for corporate review.
+      summary: Submit Partner KYC
+      tags:
+      - Partner Management
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartnerKYC'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PartnerKYC'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PartnerKYC'
+        required: true
+      security:
+      - jwtAuth
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: KYC already submitted or validation errors.
+          description: ''
+  /api/v1/partner/onboard/:
+    post:
+      operationId: partner_onboard_create
+      description: Accepts corporate registration parameters, spins up an inactive
+        Partner profile, and issues an API key for subsequent configuration steps.
+      summary: Self-register New Partner
+      tags:
+      - Partner Management
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartnerOnboarding'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PartnerOnboarding'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PartnerOnboarding'
+        required: true
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  partner_id:
+                    type: string
+                    format: uuid
+                  api_key:
+                    type: string
+                    description: Shown once only.
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Validation errors.
+          description: ''
+  /api/v1/partner/plans/:
+    get:
+      operationId: partner_plans_retrieve
+      description: |-
+        Provider admins manage their own plans.
+        IsProviderAdmin enforces: authenticated + partner_admin + provider type.
+        No inline role checks needed.
+      summary: 'Provider Admin: List managed plans'
+      parameters:
+      - in: query
+        name: status
+        schema:
+          type: string
+        description: 'Filter by status: ''active'' or ''inactive'''
+      tags:
+      - partner
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          description: List of insurance plans for the authenticated provider.
+    post:
+      operationId: partner_plans_create
+      description: |-
+        Provider admins manage their own plans.
+        IsProviderAdmin enforces: authenticated + partner_admin + provider type.
+        No inline role checks needed.
+      summary: 'Provider Admin: Create a new plan'
+      tags:
+      - partner
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InsurancePlanCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/InsurancePlanCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/InsurancePlanCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsurancePlan'
+          description: ''
+        '400':
+          description: Validation error data.
+  /api/v1/partner/plans/{plan_id}/:
+    get:
+      operationId: partner_plans_retrieve_2
+      description: |-
+        Provider admins retrieve, update, or soft-delete their own plans.
+        IsProviderAdmin enforces role at the class level.
+        Object ownership is enforced via provider=partner filter in get_object().
+      summary: 'Provider Admin: Retrieve a managed plan details'
+      parameters:
+      - in: path
+        name: plan_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - partner
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsurancePlan'
+          description: ''
+        '404':
+          description: Plan not found.
+    patch:
+      operationId: partner_plans_partial_update
+      description: |-
+        Provider admins retrieve, update, or soft-delete their own plans.
+        IsProviderAdmin enforces role at the class level.
+        Object ownership is enforced via provider=partner filter in get_object().
+      summary: 'Provider Admin: Partially update a plan'
+      parameters:
+      - in: path
+        name: plan_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - partner
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedInsurancePlanCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedInsurancePlanCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedInsurancePlanCreate'
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsurancePlan'
+          description: ''
+        '400':
+          description: Validation error data.
+        '404':
+          description: Plan not found.
+    delete:
+      operationId: partner_plans_destroy
+      description: |-
+        Provider admins retrieve, update, or soft-delete their own plans.
+        IsProviderAdmin enforces role at the class level.
+        Object ownership is enforced via provider=partner filter in get_object().
+      summary: 'Provider Admin: Soft-delete a plan'
+      parameters:
+      - in: path
+        name: plan_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - partner
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          description: Plan deactivated successfully.
+        '404':
+          description: Plan not found.
+  /api/v1/partner/providers/:
+    get:
+      operationId: partner_providers_retrieve
+      description: |-
+        Distributors view the list of providers they have been granted access to.
+        IsDistributorAdmin enforces: authenticated + partner_admin + distributor type.
+      summary: 'Distributor Admin: View accessible providers'
+      tags:
+      - partner
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          description: List of allowed provider accesses.
+  /api/v1/partner/subscriptions/:
+    get:
+      operationId: partner_subscriptions_list
+      description: Allows providers or distributors to view corporate-relevant subscriptions
+        depending on organizational context.
+      summary: Partner List Subscriptions
+      parameters:
+      - in: query
+        name: status
+        schema:
+          type: string
+        description: Filter context scope via current state mapping context attributes.
+      tags:
+      - partner
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PolicySubscription'
+          description: ''
+  /api/v1/payments/callback/:
+    get:
+      operationId: payments_callback_retrieve
+      description: Handles the user redirect landing from Interswitch. Verifies the
+        status with the gateway if still pending, updates the database, and returns
+        the transaction state.
+      summary: Interswitch Payment Callback
+      parameters:
+      - in: query
+        name: ref
+        schema:
+          type: string
+        description: Internal transaction reference (e.g., TII-XXXX).
+        required: true
+      tags:
+      - Payments
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Missing transaction reference.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Transaction not found.
+          description: ''
+        '502':
+          content:
+            application/json:
+              schema:
+                description: Gateway verification error.
+          description: ''
+  /api/v1/payments/dunning/final-failure/:
+    post:
+      operationId: payments_dunning_final_failure_create
+      description: Executes post-dunning lifecycle automation routines when recovery
+        attempts fail. Terminates active access windows and transitions state explicitly
+        to 'lapsed'.
+      summary: Handle Final Dunning Failure
+      tags:
+      - Payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - subscription_id
+              properties:
+                subscription_id:
+                  type: string
+                  format: uuid
+                transaction_ref:
+                  type: string
+                  description: Last failing reference string context.
+                reason:
+                  type: string
+                  default: dunning_exhausted
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  subscription_id:
+                    type: string
+                    format: uuid
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Missing subscription identifier parameters.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Target subscription reference does not exist contextually.
+          description: ''
+  /api/v1/payments/initiate/:
+    post:
+      operationId: payments_initiate_create
+      description: Validates the request, creates a PENDING Transaction record, calls
+        Interswitch to fetch a payment URL, and returns it to the frontend.
+      summary: Initiate Interswitch Payment
+      tags:
+      - Payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitiatePayment'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/InitiatePayment'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/InitiatePayment'
+        required: true
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  payment_url:
+                    type: string
+                    format: uri
+                  reference:
+                    type: string
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Validation error.
+          description: ''
+        '502':
+          content:
+            application/json:
+              schema:
+                description: Gateway error.
+          description: ''
+  /api/v1/payments/interswitch/webhook/:
+    post:
+      operationId: payments_interswitch_webhook_create
+      description: Receives server-to-server transaction status notifications from
+        Interswitch. Requires an 'x-interswitch-signature' header. Always returns
+        a 200 OK to stop retries.
+      summary: Interswitch Server Webhook
+      parameters:
+      - in: header
+        name: x-interswitch-signature
+        schema:
+          type: string
+        description: HMAC-SHA512 signature of the raw request body.
+        required: true
+      tags:
+      - Webhooks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Webhook received successfully (outcome is logged asynchronously).
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Missing signature or invalid JSON payload.
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                description: Invalid signature verification failure.
+          description: ''
+  /api/v1/payments/nomba/checkout/:
+    post:
+      operationId: payments_nomba_checkout_create
+      description: Creates a Nomba checkout order for a pending subscription. Requires
+        explicit customer consent to automated charges. Returns a checkout link for
+        the partner to redirect their customer to.
+      summary: Initiate Nomba Checkout
+      tags:
+      - Payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - subscription_id
+              - customer_consented
+              properties:
+                subscription_id:
+                  type: string
+                  format: uuid
+                  description: UUID of the PolicySubscription in pending_payment status.
+                customer_consented:
+                  type: boolean
+                  description: Must be true. Confirms customer agreed to automated
+                    renewal charges.
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checkout_link:
+                    type: string
+                  order_reference:
+                    type: string
+                  transaction_ref:
+                    type: string
+                  amount:
+                    type: string
+                  currency:
+                    type: string
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Validation error or subscription not in correct state.
+          description: ''
+        '500':
+          content:
+            application/json:
+              schema:
+                description: Gateway error.
+          description: ''
+  /api/v1/payments/nomba/renewal/charge/:
+    post:
+      operationId: payments_nomba_renewal_charge_create
+      description: Charges a subscription renewal using its stored Nomba tokenized
+        card. Called by n8n on renewal dates and dunning retries (day 1, 3, 7). Requires
+        service account JWT.
+      summary: Trigger auto-renewal charge
+      tags:
+      - Payments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - subscription_id
+              properties:
+                subscription_id:
+                  type: string
+                  format: uuid
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  outcome:
+                    type: string
+                    enum:
+                    - success
+                    - failed
+                  transaction_ref:
+                    type: string
+                  subscription_id:
+                    type: string
+                  amount:
+                    type: string
+                  failure_reason:
+                    type: string
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Missing or invalid subscription_id, or business rule
+                  violation.
+          description: ''
+  /api/v1/payments/nomba/webhook/:
+    post:
+      operationId: payments_nomba_webhook_create
+      description: Handles checkout processing updates asynchronously from Nomba.
+        Validates authenticity via custom timestamp composite cryptographic headers.
+      summary: Nomba Server Webhook
+      parameters:
+      - in: header
+        name: nomba-signature
+        schema:
+          type: string
+        description: HMAC-SHA256 base64 string derived from composite structural context.
+        required: true
+      - in: header
+        name: nomba-timestamp
+        schema:
+          type: string
+        description: Epoch time format token assigned to prevent payload mutation.
+        required: true
+      tags:
+      - Webhooks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Payload received and verified.
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Missing custom layout headers or semantic parser JSON
+                  issues.
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                description: Signature verification engine denied transaction execution
+                  context.
+          description: ''
+  /api/v1/plans/:
+    get:
+      operationId: plans_retrieve
+      description: |-
+        Public endpoint — customers browse available plans.
+        Scoped to the requesting partner via X-Partner-Key middleware:
+        - Provider partner: shows their own active plans only.
+        - Distributor partner: shows plans from providers they have access to.
+      summary: List and filter active insurance plans
+      parameters:
+      - in: query
+        name: category
+        schema:
+          type: string
+        description: Filter by category name
+      - in: query
+        name: coverage_level
+        schema:
+          type: string
+        description: Filter by coverage level
+      - in: query
+        name: max_premium
+        schema:
+          type: number
+          format: double
+        description: Maximum premium price
+      - in: query
+        name: min_premium
+        schema:
+          type: number
+          format: double
+        description: Minimum premium price
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Search term for name or description
+      - in: query
+        name: sort_by
+        schema:
+          type: string
+          default: -created_at
+        description: 'Sort fields: premium, -premium, created_at, -created_at, name'
+      tags:
+      - plans
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      - {}
+      responses:
+        '200':
+          description: Filtered list of insurance plans.
+  /api/v1/plans/{plan_id}/:
+    get:
+      operationId: plans_retrieve_2
+      description: |-
+        Public endpoint — single plan detail.
+        Distributor access check is enforced at queryset level.
+      summary: Retrieve an active plan detail
+      parameters:
+      - in: path
+        name: plan_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - plans
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsurancePlan'
+          description: ''
+        '404':
+          description: Plan not found or access denied.
+  /api/v1/plans/context/:
+    get:
+      operationId: plans_context_retrieve
+      description: |-
+        Conversational Insurance Assistant context feed.
+        Called by n8n — requires a valid JWT from a dedicated service account.
+        Provides structured plan data injected into Claude system prompt.
+      summary: 'AI Engine: Fetch structured system prompt context'
+      tags:
+      - plans
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          description: Flattened, highly compressed plan parameters tailored for LLM
+            consumption.
+  /api/v1/plans/recommend/:
+    get:
+      operationId: plans_recommend_retrieve
+      description: |-
+        AI Plan Recommendation Engine.
+        Called by n8n — requires a valid JWT from a dedicated service account.
+        Returns filtered and ranked plans based on query params for AI to reason over.
+      summary: 'AI Engine: Get plan recommendations'
+      parameters:
+      - in: query
+        name: budget
+        schema:
+          type: number
+          format: double
+        description: Maximum premium budget allowed
+      - in: query
+        name: category
+        schema:
+          type: string
+        description: Filter recommendations by category
+      - in: query
+        name: coverage_level
+        schema:
+          type: string
+        description: Target coverage level
+      tags:
+      - plans
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          description: Ranked and filtered recommended plans with context information.
+  /api/v1/staff/auth/login/:
+    post:
+      operationId: staff_auth_login_create
+      description: Enforces strict structural checks to confirm the user possesses
+        elevated global administrative roles (`super_admin`) before dispatching tokens.
+      summary: Internal Staff Login
+      tags:
+      - Staff Administration Operations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Login'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Login'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Login'
+        required: true
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens:
+                    type: object
+                    properties:
+                      refresh:
+                        type: string
+                      access:
+                        type: string
+                  role:
+                    type: string
+                  email:
+                    type: string
+                    format: email
+                  first_name:
+                    type: string
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Validation errors.
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                description: Invalid email or password.
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                description: Account is inactive or user lacks super_admin role.
+          description: ''
+  /api/v1/staff/claims/:
+    get:
+      operationId: staff_claims_list
+      description: Allows platform super administrators to browse claims entries filed
+        across the ecosystem matrix.
+      summary: Staff Core General List Claims
+      parameters:
+      - in: query
+        name: status
+        schema:
+          type: string
+        description: Filter claims by processing status
+      tags:
+      - TheeInsurance Platform Core Operations
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Claim'
+          description: ''
+  /api/v1/staff/claims/{claim_id}/:
+    get:
+      operationId: staff_claims_retrieve
+      description: Retrieves any single ecosystem claim entry profile mapping across
+        partners.
+      summary: Staff Core Single Detail Fetch
+      parameters:
+      - in: path
+        name: claim_id
+        schema:
+          type: string
+          format: uuid
+        description: UUID of operational claim target
+        required: true
+      tags:
+      - TheeInsurance Platform Core Operations
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Claim'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Claim reference key not located in global records mapping.
+          description: ''
+    patch:
+      operationId: staff_claims_partial_update
+      description: Allows platform core specialists to triage claim parameters or
+        execute priority status structural updates before deep carrier routing validation
+        cycles occur.
+      summary: Staff Central Core Initial Processing Review
+      parameters:
+      - in: path
+        name: claim_id
+        schema:
+          type: string
+          format: uuid
+        description: UUID of operational claim target
+        required: true
+      tags:
+      - TheeInsurance Platform Core Operations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedClaimReview'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedClaimReview'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedClaimReview'
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Claim updated to under_review.
+                  claim_reference:
+                    type: string
+                    example: CLM-77112239
+                  status:
+                    type: string
+                    example: under_review
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Triage input structural validation exception.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Claim entry identifier element lookup mismatch.
+          description: ''
+  /api/v1/staff/distributor-access/:
+    post:
+      operationId: staff_distributor_access_create
+      description: Handles creation and activation of secure business access lines
+        between downstream insurance 'distributors' and core policy 'providers'.
+      summary: Grant Distributor-Provider Access Line
+      tags:
+      - Staff Administration Operations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - distributor_id
+              - provider_id
+              properties:
+                distributor_id:
+                  type: string
+                  format: uuid
+                provider_id:
+                  type: string
+                  format: uuid
+      security:
+      - jwtAuth
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  created:
+                    type: boolean
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Missing parameters.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Designated partner nodes not found.
+          description: ''
+    delete:
+      operationId: staff_distributor_access_destroy
+      description: Disables systemic relationship cross-lines between downstream insurance
+        'distributors' and core policy 'providers'. Logs out active synchronization
+        lines.
+      summary: Revoke Distributor-Provider Access Line
+      tags:
+      - Staff Administration Operations
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Access relationship record not found.
+          description: ''
+  /api/v1/staff/kyc/partners/:
+    get:
+      operationId: staff_kyc_partners_retrieve
+      description: Allows internal staff members to query incoming organizational
+        applications. Handles both full lists filtered by status and singular lookups
+        based on path parameters.
+      summary: List or Retrieve Partner KYC Submissions
+      parameters:
+      - in: path
+        name: partner_id
+        schema:
+          type: string
+          format: uuid
+        description: UUID of the specific partner to inspect.
+        required: true
+      - in: query
+        name: status
+        schema:
+          type: string
+          default: pending
+        description: Filter list lookup results by submission status (e.g., pending,
+          approved, rejected).
+      tags:
+      - Staff Administration Operations
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Returns single kyc_submission object or a list under
+                  kyc_submissions key.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: KYC submission not found for the designated partner.
+          description: ''
+    patch:
+      operationId: staff_kyc_partners_partial_update
+      description: Issue corporate state confirmations (approve/reject), record internal
+        review notes, and toggle the partner's production operational state.
+      summary: Review Partner KYC Submission
+      parameters:
+      - in: path
+        name: partner_id
+        schema:
+          type: string
+          format: uuid
+        description: UUID of the partner under review.
+        required: true
+      tags:
+      - Staff Administration Operations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - action
+              properties:
+                action:
+                  type: string
+                  enum:
+                  - approve
+                  - reject
+                note:
+                  type: string
+                  description: Reason or context for the review status decision.
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  partner:
+                    type: string
+                  is_active:
+                    type: boolean
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Invalid action value supplied.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: KYC record not found.
+          description: ''
+  /api/v1/staff/kyc/partners/{partner_id}/:
+    get:
+      operationId: staff_kyc_partners_retrieve_2
+      description: Allows internal staff members to query incoming organizational
+        applications. Handles both full lists filtered by status and singular lookups
+        based on path parameters.
+      summary: List or Retrieve Partner KYC Submissions
+      parameters:
+      - in: path
+        name: partner_id
+        schema:
+          type: string
+          format: uuid
+        description: UUID of the specific partner to inspect.
+        required: true
+      - in: query
+        name: status
+        schema:
+          type: string
+          default: pending
+        description: Filter list lookup results by submission status (e.g., pending,
+          approved, rejected).
+      tags:
+      - Staff Administration Operations
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Returns single kyc_submission object or a list under
+                  kyc_submissions key.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: KYC submission not found for the designated partner.
+          description: ''
+    patch:
+      operationId: staff_kyc_partners_partial_update_2
+      description: Issue corporate state confirmations (approve/reject), record internal
+        review notes, and toggle the partner's production operational state.
+      summary: Review Partner KYC Submission
+      parameters:
+      - in: path
+        name: partner_id
+        schema:
+          type: string
+          format: uuid
+        description: UUID of the partner under review.
+        required: true
+      tags:
+      - Staff Administration Operations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - action
+              properties:
+                action:
+                  type: string
+                  enum:
+                  - approve
+                  - reject
+                note:
+                  type: string
+                  description: Reason or context for the review status decision.
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  partner:
+                    type: string
+                  is_active:
+                    type: boolean
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Invalid action value supplied.
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: KYC record not found.
+          description: ''
+  /api/v1/staff/service-accounts/:
+    get:
+      operationId: staff_service_accounts_retrieve
+      description: Staff-only view. Returns structural configuration fields, registration
+        records, metadata states, and last usage statistics. Never surfaces the private
+        hashed client secret details.
+      summary: Audit Service Account Credentials
+      tags:
+      - Staff Service Account Infrastructure Management
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    client_id:
+                      type: string
+                    name:
+                      type: string
+                    is_active:
+                      type: boolean
+                    created_at:
+                      type: string
+                      format: date-time
+                    last_used_at:
+                      type: string
+                      format: date-time
+                      nullable: true
+                    email:
+                      type: string
+          description: ''
+  /api/v1/staff/service-accounts/{client_id}/revoke/:
+    post:
+      operationId: staff_service_accounts_revoke_create
+      description: Deactivates a service account credential structural link. Preserves
+        audit history logs while rendering both credential structures and parent internal
+        routing system users inactive.
+      summary: Revoke Service Account Permissions
+      parameters:
+      - in: path
+        name: client_id
+        schema:
+          type: string
+        description: The target API client_id hash key string.
+        required: true
+      tags:
+      - Staff Service Account Infrastructure Management
+      security:
+      - jwtAuth
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                description: Target identifier string matched no active record.
+          description: ''
+  /api/v1/staff/service-accounts/create/:
+    post:
+      operationId: staff_service_accounts_create_create
+      description: Staff-only endpoint to provision system service accounts (e.g.,
+        n8n, runtime schedulers). The raw client_secret is returned ONLY once in this
+        response and cannot be recovered if lost.
+      summary: Provision Machine-to-Machine Service Account
+      tags:
+      - Staff Service Account Infrastructure Management
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - name
+              properties:
+                name:
+                  type: string
+                  example: n8n automation workflows
+      security:
+      - jwtAuth
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  client_id:
+                    type: string
+                  client_secret:
+                    type: string
+                    description: Returned once only.
+                  name:
+                    type: string
+                  warning:
+                    type: string
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                description: Name field missing.
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                description: Service account with a matching generated routing identifier
+                  already exists.
+          description: ''
+  /api/v1/subscriptions/:
+    get:
+      operationId: subscriptions_list
+      description: Allows a customer to view their active or past policy subscriptions.
+      summary: List Customer Subscriptions
+      parameters:
+      - in: query
+        name: status
+        schema:
+          type: string
+        description: Filter subscriptions by status (e.g., active, pending_payment,
+          cancelled)
+      tags:
+      - subscriptions
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PolicySubscription'
+          description: ''
+  /api/v1/subscriptions/{subscription_id}/:
+    get:
+      operationId: subscriptions_retrieve
+      description: Fetch explicit object properties of a given customer subscription
+        instance.
+      summary: Retrieve Subscription Detail
+      parameters:
+      - in: path
+        name: subscription_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - subscriptions
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicySubscription'
+          description: ''
+    delete:
+      operationId: subscriptions_destroy
+      description: Transition an active subscription directly into a 'cancelled' status.
+      summary: Cancel Subscription
+      parameters:
+      - in: path
+        name: subscription_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - subscriptions
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/subscriptions/{subscription_id}/documents/:
+    get:
+      operationId: subscriptions_documents_retrieve
+      description: Returns lists of uploaded, required, and missing documentation
+        statuses.
+      summary: View Subscription Document Checklist
+      parameters:
+      - in: path
+        name: subscription_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - subscriptions
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+    post:
+      operationId: subscriptions_documents_create
+      description: Uploads a single file required for the subscription evaluation.
+      summary: Upload Subscription Document
+      parameters:
+      - in: path
+        name: subscription_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - subscriptions
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                document_type:
+                  type: string
+                  description: The code representing the document requirement.
+                file:
+                  type: string
+                  format: binary
+                  description: The physical file payload.
+              required:
+              - document_type
+              - file
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/subscriptions/{subscription_id}/verify-payment/:
+    post:
+      operationId: subscriptions_verify_payment_create
+      description: Submit gateway confirmation hashes to transition status out of
+        pending_payment and into active.
+      summary: Verify Payment Reference
+      parameters:
+      - in: path
+        name: subscription_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - subscriptions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                payment_reference:
+                  type: string
+                  description: Transaction reference ID from payment gateway.
+              required:
+              - payment_reference
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/subscriptions/create/:
+    post:
+      operationId: subscriptions_create_create
+      description: Initiate a new insurance policy subscription. Returns details on
+        required document uploads.
+      summary: Initiate a Subscription
+      tags:
+      - subscriptions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicySubscriptionCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PolicySubscriptionCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PolicySubscriptionCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/webhooks/service/register/:
+    get:
+      operationId: webhooks_service_register_retrieve
+      description: Retrieve all webhook configurations specifically registered for
+        the calling service account (e.g., n8n).
+      summary: List service account webhooks
+      tags:
+      - webhooks
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+    post:
+      operationId: webhooks_service_register_create
+      description: Upsert webhook URLs for payment lifecycle events driven by internal
+        service accounts.
+      summary: Register or update service webhooks
+      tags:
+      - webhooks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                webhooks:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      event:
+                        type: string
+                        example: payment.successful
+                      url:
+                        type: string
+                        format: uri
+                        example: https://n8n.internal/webhook/payment-success
+                    required:
+                    - event
+                    - url
+              required:
+              - webhooks
+      security:
+      - jwtAuth: []
+      - jwtAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+components:
+  schemas:
+    Claim:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        claim_reference:
+          type: string
+          readOnly: true
+        subscription:
+          type: string
+          format: uuid
+        plan_name:
+          type: string
+          readOnly: true
+        customer:
+          type: string
+          format: uuid
+          readOnly: true
+        customer_email:
+          type: string
+          format: email
+          readOnly: true
+        provider:
+          type: string
+          format: uuid
+          readOnly: true
+        provider_name:
+          type: string
+          readOnly: true
+        claim_type:
+          $ref: '#/components/schemas/ClaimTypeEnum'
+        incident_date:
+          type: string
+          format: date
+        incident_description:
+          type: string
+        claimed_amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+        approved_amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/ClaimStatusEnum'
+          readOnly: true
+        theeinsurance_review_note:
+          type: string
+          readOnly: true
+        provider_review_note:
+          type: string
+          readOnly: true
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClaimDocument'
+          readOnly: true
+        submitted_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - approved_amount
+      - claim_reference
+      - claim_type
+      - claimed_amount
+      - customer
+      - customer_email
+      - documents
+      - id
+      - incident_date
+      - incident_description
+      - plan_name
+      - provider
+      - provider_name
+      - provider_review_note
+      - status
+      - submitted_at
+      - subscription
+      - theeinsurance_review_note
+      - updated_at
+    ClaimCreate:
+      type: object
+      properties:
+        subscription_id:
+          type: string
+          format: uuid
+        claim_type:
+          $ref: '#/components/schemas/ClaimTypeEnum'
+        incident_date:
+          type: string
+          format: date
+        incident_description:
+          type: string
+        claimed_amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+      required:
+      - claim_type
+      - claimed_amount
+      - incident_date
+      - incident_description
+      - subscription_id
+    ClaimDocument:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        document_type:
+          $ref: '#/components/schemas/DocumentTypeEnum'
+        file:
+          type: string
+          format: uri
+        uploaded_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - document_type
+      - file
+      - id
+      - uploaded_at
+    ClaimDocumentsChecklistResponse:
+      type: object
+      properties:
+        required_documents:
+          type: array
+          items:
+            type: string
+        uploaded_documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClaimDocument'
+        missing_documents:
+          type: array
+          items:
+            type: string
+      required:
+      - missing_documents
+      - required_documents
+      - uploaded_documents
+    ClaimStatusEnum:
+      enum:
+      - submitted
+      - under_review
+      - more_info_required
+      - approved
+      - rejected
+      type: string
+      description: |-
+        * `submitted` - Submitted
+        * `under_review` - Under Review
+        * `more_info_required` - More Information Required
+        * `approved` - Approved
+        * `rejected` - Rejected
+    ClaimTypeEnum:
+      enum:
+      - motor_accident
+      - motor_theft
+      - travel_medical
+      - travel_baggage
+      - travel_cancellation
+      type: string
+      description: |-
+        * `motor_accident` - Motor Accident
+        * `motor_theft` - Motor Theft
+        * `travel_medical` - Travel Medical Emergency
+        * `travel_baggage` - Travel Lost/Damaged Baggage
+        * `travel_cancellation` - Travel Flight Cancellation
+    CustomerKYC:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        id_type:
+          $ref: '#/components/schemas/IdTypeEnum'
+        id_number:
+          type: string
+          maxLength: 50
+        id_document:
+          type: string
+          format: uri
+        selfie:
+          type: string
+          format: uri
+        status:
+          allOf:
+          - $ref: '#/components/schemas/StatusEf1Enum'
+          readOnly: true
+        submitted_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - id
+      - id_document
+      - id_number
+      - id_type
+      - status
+      - submitted_at
+    CustomerRegistration:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          writeOnly: true
+        confirm_password:
+          type: string
+          writeOnly: true
+        first_name:
+          type: string
+          maxLength: 100
+        last_name:
+          type: string
+          maxLength: 100
+        phone_number:
+          type: string
+        date_of_birth:
+          type: string
+          format: date
+        gender:
+          $ref: '#/components/schemas/GenderEnum'
+        address:
+          type: string
+      required:
+      - address
+      - confirm_password
+      - date_of_birth
+      - email
+      - first_name
+      - gender
+      - last_name
+      - password
+      - phone_number
+    DocumentTypeEnum:
+      enum:
+      - claim_form
+      - police_report
+      - drivers_licence
+      - damage_photos
+      - repair_estimate
+      - vehicle_particulars
+      - medical_report
+      - hospital_bills
+      - property_irregularity_report
+      - flight_documents
+      - travel_insurance_certificate
+      - other
+      type: string
+      description: |-
+        * `claim_form` - Completed Claim Form
+        * `police_report` - Police Report
+        * `drivers_licence` - Driver's Licence
+        * `damage_photos` - Damage Photographs
+        * `repair_estimate` - Repair Estimate from Garage
+        * `vehicle_particulars` - Vehicle Particulars
+        * `medical_report` - Medical Report
+        * `hospital_bills` - Hospital Bills and Receipts
+        * `property_irregularity_report` - Property Irregularity Report
+        * `flight_documents` - Flight Tickets and Boarding Pass
+        * `travel_insurance_certificate` - Travel Insurance Certificate
+        * `other` - Other Supporting Document
+    GenderEnum:
+      enum:
+      - male
+      - female
+      - other
+      type: string
+      description: |-
+        * `male` - Male
+        * `female` - Female
+        * `other` - Other
+    IdTypeEnum:
+      enum:
+      - nin
+      - bvn
+      - passport
+      - drivers_licence
+      - voters_card
+      type: string
+      description: |-
+        * `nin` - National Identity Number
+        * `bvn` - Bank Verification Number
+        * `passport` - International Passport
+        * `drivers_licence` - Driver's Licence
+        * `voters_card` - Voter's Card
+    InitiatePayment:
+      type: object
+      description: |-
+        Validates a payment initiation request and creates a PENDING Transaction.
+
+        Ensures:
+          - The subscription exists and belongs to the requesting user
+          - The subscription is in a payable state (PENDING or EXPIRED)
+          - No duplicate PENDING transaction already exists for this subscription
+          - Amount is pulled from the subscription's plan (not trusted from client)
+      properties:
+        subscription_id:
+          type: string
+          format: uuid
+        payment_type:
+          $ref: '#/components/schemas/PaymentTypeEnum'
+      required:
+      - payment_type
+      - subscription_id
+    InsurancePlan:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        name:
+          type: string
+          maxLength: 500
+        provider:
+          type: string
+          format: uuid
+        provider_name:
+          type: string
+          readOnly: true
+        category:
+          type: string
+          format: uuid
+        category_name:
+          type: string
+          readOnly: true
+        coverage_level:
+          $ref: '#/components/schemas/PlanCoverageLevelEnum'
+        coverage_amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,18}(?:\.\d{0,2})?$
+        premium:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,18}(?:\.\d{0,2})?$
+        duration_months:
+          type: integer
+          maximum: 2147483647
+          minimum: -2147483648
+        description:
+          type: string
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - category
+      - category_name
+      - coverage_amount
+      - coverage_level
+      - created_at
+      - description
+      - duration_months
+      - id
+      - name
+      - premium
+      - provider
+      - provider_name
+      - updated_at
+    InsurancePlanCreate:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 500
+        category:
+          type: string
+          format: uuid
+        coverage_level:
+          $ref: '#/components/schemas/PlanCoverageLevelEnum'
+        coverage_amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,18}(?:\.\d{0,2})?$
+        premium:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,18}(?:\.\d{0,2})?$
+        duration_months:
+          type: integer
+          maximum: 2147483647
+          minimum: -2147483648
+        description:
+          type: string
+        is_active:
+          type: boolean
+      required:
+      - category
+      - coverage_amount
+      - coverage_level
+      - description
+      - duration_months
+      - name
+      - premium
+    Login:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          writeOnly: true
+      required:
+      - email
+      - password
+    PartnerKYC:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        rc_number:
+          type: string
+          maxLength: 20
+        naicom_licence_number:
+          type: string
+          maxLength: 50
+        tax_identification_number:
+          type: string
+          maxLength: 20
+        cac_certificate:
+          type: string
+          format: uri
+        naicom_licence_doc:
+          type: string
+          format: uri
+        proof_of_address:
+          type: string
+          format: uri
+        status:
+          allOf:
+          - $ref: '#/components/schemas/StatusEf1Enum'
+          readOnly: true
+        submitted_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - cac_certificate
+      - id
+      - proof_of_address
+      - rc_number
+      - status
+      - submitted_at
+      - tax_identification_number
+    PartnerOnboarding:
+      type: object
+      properties:
+        partner_name:
+          type: string
+          maxLength: 255
+        partner_slug:
+          type: string
+          maxLength: 100
+        partner_type:
+          $ref: '#/components/schemas/PartnerTypeEnum'
+        commission_rate:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,3}(?:\.\d{0,2})?$
+          default: '0.00'
+        email:
+          type: string
+          format: email
+        first_name:
+          type: string
+          maxLength: 100
+        last_name:
+          type: string
+          maxLength: 100
+        password:
+          type: string
+          writeOnly: true
+        confirm_password:
+          type: string
+          writeOnly: true
+      required:
+      - confirm_password
+      - email
+      - first_name
+      - last_name
+      - partner_name
+      - partner_slug
+      - partner_type
+      - password
+    PartnerTypeEnum:
+      enum:
+      - provider
+      - distributor
+      type: string
+      description: |-
+        * `provider` - Insurance Provider
+        * `distributor` - Distribution Partner
+    PatchedClaimReview:
+      type: object
+      description: Used by TheeInsurance staff and provider admins to review claims.
+      properties:
+        status:
+          $ref: '#/components/schemas/ClaimStatusEnum'
+        review_note:
+          type: string
+        approved_amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,18}(?:\.\d{0,2})?$
+    PatchedInsurancePlanCreate:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 500
+        category:
+          type: string
+          format: uuid
+        coverage_level:
+          $ref: '#/components/schemas/PlanCoverageLevelEnum'
+        coverage_amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,18}(?:\.\d{0,2})?$
+        premium:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,18}(?:\.\d{0,2})?$
+        duration_months:
+          type: integer
+          maximum: 2147483647
+          minimum: -2147483648
+        description:
+          type: string
+        is_active:
+          type: boolean
+    PaymentStatusEnum:
+      enum:
+      - PENDING
+      - SUCCESSFUL
+      - FAILED
+      - REVERSED
+      type: string
+      description: |-
+        * `PENDING` - Pending
+        * `SUCCESSFUL` - Successful
+        * `FAILED` - Failed
+        * `REVERSED` - Reversed
+    PaymentTypeEnum:
+      enum:
+      - NEW_SUBSCRIPTION
+      - RENEWAL
+      type: string
+      description: |-
+        * `NEW_SUBSCRIPTION` - New Subscription
+        * `RENEWAL` - Renewal
+    PlanCoverageLevelEnum:
+      enum:
+      - third_party
+      - tp_fire_theft
+      - comprehensive
+      - standard
+      type: string
+      description: |-
+        * `third_party` - Third Party Only
+        * `tp_fire_theft` - Third Party, Fire & Theft
+        * `comprehensive` - Comprehensive
+        * `standard` - Standard
+    PolicySubscription:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        customer:
+          type: string
+          format: uuid
+          readOnly: true
+        customer_email:
+          type: string
+          readOnly: true
+        plan:
+          type: string
+          format: uuid
+        plan_name:
+          type: string
+          readOnly: true
+        provider:
+          type: string
+          format: uuid
+          readOnly: true
+        provider_name:
+          type: string
+          readOnly: true
+        distributor:
+          type: string
+          format: uuid
+          readOnly: true
+          nullable: true
+        distributor_name:
+          type: string
+          readOnly: true
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        status:
+          allOf:
+          - $ref: '#/components/schemas/SubscriptionStatusEnum'
+          readOnly: true
+        amount_paid:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,18}(?:\.\d{0,2})?$
+          readOnly: true
+        provider_payout:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,18}(?:\.\d{0,2})?$
+          readOnly: true
+        distributor_commission:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,18}(?:\.\d{0,2})?$
+          readOnly: true
+        platform_fee:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,18}(?:\.\d{0,2})?$
+          readOnly: true
+        payment_reference:
+          type: string
+          readOnly: true
+          nullable: true
+        payment_verified:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+        auto_charge_enabled:
+          type: boolean
+      required:
+      - amount_paid
+      - created_at
+      - customer
+      - customer_email
+      - distributor
+      - distributor_commission
+      - distributor_name
+      - end_date
+      - id
+      - payment_reference
+      - payment_verified
+      - plan
+      - plan_name
+      - platform_fee
+      - provider
+      - provider_name
+      - provider_payout
+      - start_date
+      - status
+      - updated_at
+    PolicySubscriptionCreate:
+      type: object
+      properties:
+        plan_id:
+          type: string
+          format: uuid
+          writeOnly: true
+        start_date:
+          type: string
+          format: date
+      required:
+      - plan_id
+      - start_date
+    StatusEf1Enum:
+      enum:
+      - pending
+      - approved
+      - rejected
+      type: string
+      description: |-
+        * `pending` - Pending Review
+        * `approved` - Approved
+        * `rejected` - Rejected
+    SubscriptionStatusEnum:
+      enum:
+      - active
+      - expired
+      - cancelled
+      - failed
+      - grace_period
+      - lapsed
+      - pending_payment
+      - pending_document
+      type: string
+      description: |-
+        * `active` - Active
+        * `expired` - Expired
+        * `cancelled` - Cancelled
+        * `failed` - Failed
+        * `grace_period` - Grace Period
+        * `lapsed` - Lapsed
+        * `pending_payment` - Pending Payment
+        * `pending_document` - Pending Document
+    Transaction:
+      type: object
+      description: |-
+        Read-only serializer for returning Transaction state to the frontend.
+        Used in the callback view and any transaction detail/list endpoints.
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        reference:
+          type: string
+          readOnly: true
+        amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,10}(?:\.\d{0,2})?$
+          readOnly: true
+        currency:
+          type: string
+          readOnly: true
+        payment_type:
+          allOf:
+          - $ref: '#/components/schemas/PaymentTypeEnum'
+          readOnly: true
+        payment_status:
+          allOf:
+          - $ref: '#/components/schemas/PaymentStatusEnum'
+          readOnly: true
+        gateway_reference:
+          type: string
+          readOnly: true
+          nullable: true
+        subscription_id:
+          type: string
+          format: uuid
+          readOnly: true
+        initiated_by:
+          type: string
+          nullable: true
+          description: Return the email of the user who initiated the transaction.
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - amount
+      - created_at
+      - currency
+      - gateway_reference
+      - id
+      - initiated_by
+      - payment_status
+      - payment_type
+      - reference
+      - subscription_id
+      - updated_at
+  securitySchemes:
+    jwtAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

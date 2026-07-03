@@ -261,6 +261,14 @@ SPECTACULAR_SETTINGS = {
     },
     "OPERATION_ID_NAMING_STRATEGY": "operation_id",
     "SCHEMA_PATH_PREFIX": r"/api/v[0-9]",
+    "ENUM_NAME_OVERRIDES": {
+        "ClaimStatusEnum": "claims.models.Claim.STATUS_CHOICES",
+        "SubscriptionStatusEnum": "subscriptions.models.PolicySubscription.STATUS_CHOICES",
+        "PlanCoverageLevelEnum": "plans.models.InsurancePlan.COVERAGE_LEVELS",
+        "InsuranceCategoryEnum": "plans.models.InsuranceCategory.CATEGORY_CHOICES",
+        "SubscriptionDocumentTypeChoicesEnum": "subscriptions.models.SubscriptionDocument.DOCUMENT_TYPE_CHOICES",
+        "CallbackLogStatusEnum": "payments.models.CallbackLog.Status",
+    },
 }
 
 STORAGES = {
