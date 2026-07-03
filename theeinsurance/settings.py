@@ -16,6 +16,7 @@ from datetime import timedelta
 from decouple import config  # type: ignore
 import dotenv
 import dj_database_url
+from requests.utils import default_headers
 
 dotenv.load_dotenv()
 
@@ -184,10 +185,8 @@ CORS_ALLOWED_ORIGINS = [
     "https://mock-insurance-customer-portal.vercel.app",
 ]
 
-CORS_ALLOWED_HEADERS = [
-    'authorization',
-    'content-type',
-    'x-partner-key',
+CORS_ALLOWED_HEADERS = list(default_headers) + [
+    "x-partner-key",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
