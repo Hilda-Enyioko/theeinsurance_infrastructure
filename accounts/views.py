@@ -19,6 +19,7 @@ from django.contrib.auth import authenticate
 from django.utils import timezone
 from datetime import timedelta
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from accounts.permissions import IsSuperAdmin, IsPartnerAdmin, IsCustomer
 from core.throttles import IPRateThrottle, PartnerRateThrottle
@@ -124,7 +125,6 @@ class PartnerKYCView(APIView):
             400: {"description": "KYC already submitted or validation errors."}
         },
         tags=["Partner Management"],
-        auth=["jwtAuth"]
     )
     def post(self, request):
         partner = get_partner_from_user(request.user)
@@ -159,8 +159,7 @@ class PartnerKYCView(APIView):
             200: PartnerKYCSerializer,
             404: {"description": "No KYC documentation submitted yet."}
         },
-        tags=["Partner Management"],
-        auth=["jwtAuth"]
+        tags=["Partner Management"]
     )
     def get(self, request):
         partner = get_partner_from_user(request.user)
@@ -243,8 +242,7 @@ class CustomerKYCView(APIView):
             400: {"description": "KYC already submitted or validation errors."},
             404: {"description": "Customer profile not found within the current tenant scope."}
         },
-        tags=["Customer Management"],
-        auth=["jwtAuth"]
+        tags=["Customer Management"]
     )
     def post(self, request):
         try:
@@ -268,8 +266,7 @@ class CustomerKYCView(APIView):
             200: CustomerKYCSerializer,
             404: {"description": "Customer profile or KYC records not found."}
         },
-        tags=["Customer Management"],
-        auth=["jwtAuth"]
+        tags=["Customer Management"]
     )
     def get(self, request):
         try:
@@ -498,8 +495,7 @@ class StaffPartnerKYCReviewView(APIView):
             },
             404: {"description": "KYC submission not found for the designated partner."}
         },
-        tags=["Staff Administration Operations"],
-        auth=["jwtAuth"]
+        tags=["Staff Administration Operations"]
     )
     def get(self, request, partner_id=None):
         if partner_id:
@@ -569,8 +565,7 @@ class StaffPartnerKYCReviewView(APIView):
             400: {"description": "Invalid action value supplied."},
             404: {"description": "KYC record not found."}
         },
-        tags=["Staff Administration Operations"],
-        auth=["jwtAuth"]
+        tags=["Staff Administration Operations"]
     )
     def patch(self, request, partner_id):
         try:
@@ -650,8 +645,7 @@ class StaffDistributorAccessView(APIView):
             400: {"description": "Missing parameters."},
             404: {"description": "Designated partner nodes not found."}
         },
-        tags=["Staff Administration Operations"],
-        auth=["jwtAuth"]
+        tags=["Staff Administration Operations"]
     )
     def post(self, request):
         from plans.models import DistributorProviderAccess
@@ -707,8 +701,7 @@ class StaffDistributorAccessView(APIView):
             200: {"type": "object", "properties": {"message": {"type": "string"}}},
             404: {"description": "Access relationship record not found."}
         },
-        tags=["Staff Administration Operations"],
-        auth=["jwtAuth"]
+        tags=["Staff Administration Operations"]
     )
     def delete(self, request):
         from plans.models import DistributorProviderAccess
@@ -759,8 +752,7 @@ class StaffServiceAccountCreateView(APIView):
             400: {"description": "Name field missing."},
             409: {"description": "Service account with a matching generated routing identifier already exists."}
         },
-        tags=["Staff Service Account Infrastructure Management"],
-        auth=["jwtAuth"]
+        tags=["Staff Service Account Infrastructure Management"]
     )
     def post(self, request):
         name = request.data.get("name", "").strip()
@@ -830,8 +822,7 @@ class StaffServiceAccountListView(APIView):
                 }
             }
         },
-        tags=["Staff Service Account Infrastructure Management"],
-        auth=["jwtAuth"]
+        tags=["Staff Service Account Infrastructure Management"]
     )
     def get(self, request):
         creds = ServiceAccountCredential.objects.select_related("user").order_by("-created_at")
@@ -872,8 +863,7 @@ class StaffServiceAccountRevokeView(APIView):
             200: {"type": "object", "properties": {"detail": {"type": "string"}}},
             404: {"description": "Target identifier string matched no active record."}
         },
-        tags=["Staff Service Account Infrastructure Management"],
-        auth=["jwtAuth"]
+        tags=["Staff Service Account Infrastructure Management"]
     )
     def post(self, request, client_id):
         try:
