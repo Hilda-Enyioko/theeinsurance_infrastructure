@@ -364,7 +364,6 @@ class PartnerMeView(APIView):
     @extend_schema(
         summary="Get authenticated partner details",
         description="Retrieves the `partner_type` and `partner_name` for the currently logged-in partner admin.",
-        tags=["Partner"],
         responses={
             200: PartnerMeSerializer,
             403: OpenApiResponse(

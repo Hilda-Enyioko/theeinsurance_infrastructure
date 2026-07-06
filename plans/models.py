@@ -69,7 +69,14 @@ class InsurancePlan(models.Model):
     
 
 # ---Distributor Access---
+
 class DistributorProviderAccess(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     distributor = models.ForeignKey(
         Partner,
@@ -83,11 +90,13 @@ class DistributorProviderAccess(models.Model):
         related_name="distributor_access",
         limit_choices_to={"partner_type": "provider"},
     )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
     is_active = models.BooleanField(default=True)
     granted_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         unique_together = ["distributor", "provider"]
 
     def __str__(self):
-        return f"{self.distributor.name} → {self.provider.name}"
+        return f"{self.distributor.name} → {self.provider.name} ({self.status})"
