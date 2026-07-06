@@ -318,6 +318,7 @@ class DistributorProviderAccessView(APIView):
         summary="Browse all providers",
         description="Fetch all active providers hosted on the platform along with the current distributor's access status to each.",
         responses={200: ProviderBrowseSerializer(many=True)},
+        tags=["Insurance Plans: Distributor Access"]
     )
 )
 class DistributorProviderBrowseView(ListAPIView):
@@ -361,6 +362,7 @@ class DistributorProviderBrowseView(ListAPIView):
             ),
         ],
         responses={200: DistributorPlanBrowseSerializer(many=True)},
+        tags=["Insurance Plans: Distributor Access"]
     )
 )
 class DistributorPlanBrowseView(ListAPIView):
@@ -416,6 +418,7 @@ class DistributorAccessRequestView(APIView):
                 },
             )
         },
+        tags=["Insurance Plans: Distributor Access"]
     )
     def post(self, request):
         serializer = DistributorAccessRequestSerializer(
