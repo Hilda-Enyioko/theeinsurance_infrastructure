@@ -183,7 +183,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://mock-insurance-customer-portal.vercel.app",
-    "https://theeinsurance-portal.vercel.app/"
+    "https://theeinsurance-portal.vercel.app"
 ]
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
