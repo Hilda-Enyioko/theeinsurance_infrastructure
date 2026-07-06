@@ -92,20 +92,26 @@ class CustomerSubscriptionListView(APIView):
         return Response({"subscriptions": serializer.data})
 
 
+from django.db import IntegrityError
+from django.db.models import Q
+
 class CustomerSubscriptionCreateView(APIView):
     """
     Customers initiate a new subscription.
     IsCustomer enforced at class level.
     Distributor access check is enforced at queryset level before subscription creation.
+    Idempotent: reuses an existing pending subscription for the same customer+plan
+    instead of creating a duplicate.
     """
     permission_classes = [IsCustomer]
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
         summary="Initiate a Subscription",
-        description="Initiate a new insurance policy subscription. Returns details on required document uploads.",
+        description="Initiate a new insurance policy subscription. Returns details on required document uploads. Reuses an in-progress subscription for the same plan if one exists.",
         request=PolicySubscriptionCreateSerializer,
         responses={
+            200: OpenApiTypes.OBJECT,
             201: OpenApiTypes.OBJECT,
             400: OpenApiTypes.OBJECT,
             403: OpenApiTypes.OBJECT
@@ -124,6 +130,17 @@ class CustomerSubscriptionCreateView(APIView):
 
         plan = serializer.validated_data["plan"]
         start_date = serializer.validated_data["start_date"]
+
+        # --- Layer A: application-level idempotency check ---
+        existing = PolicySubscription.objects.filter(
+            customer=profile,
+            plan=plan,
+            status__in=["pending_document", "pending_payment"],
+        ).first()
+
+        if existing:
+            return self._resume_response(existing)
+
         end_date = start_date + relativedelta(months=plan.duration_months)
 
         partner = request.partner
@@ -144,16 +161,32 @@ class CustomerSubscriptionCreateView(APIView):
 
         financials = calculate_financials(plan, distributor)
 
-        subscription = PolicySubscription.objects.create(
-            customer=profile,
-            plan=plan,
-            provider=plan.provider,
-            distributor=distributor,
-            start_date=start_date,
-            end_date=end_date,
-            status="pending_document",
-            **financials,
-        )
+        # --- Layer B: DB-level constraint as the race-condition backstop ---
+        try:
+            subscription = PolicySubscription.objects.create(
+                customer=profile,
+                plan=plan,
+                provider=plan.provider,
+                distributor=distributor,
+                start_date=start_date,
+                end_date=end_date,
+                status="pending_document",
+                **financials,
+            )
+        except IntegrityError:
+            existing = PolicySubscription.objects.filter(
+                customer=profile,
+                plan=plan,
+                status__in=["pending_document", "pending_payment"],
+            ).first()
+            if existing:
+                return self._resume_response(existing)
+            # Extremely unlikely fallback: constraint fired but we can't find
+            # the row (e.g. it was cancelled/activated between catch and lookup).
+            return Response(
+                {"error": "Unable to initiate subscription right now. Please try again."},
+                status=409
+            )
 
         required_docs = get_required_documents(plan)
 
@@ -163,6 +196,33 @@ class CustomerSubscriptionCreateView(APIView):
             "amount": str(subscription.amount_paid),
             "required_documents": required_docs,
         }, status=201)
+
+    def _resume_response(self, subscription):
+        """Builds a 200 response pointing the frontend back to wherever
+        the existing pending subscription left off."""
+        required_docs = get_required_documents(subscription.plan)
+
+        if subscription.status == "pending_document":
+            uploaded_types = list(
+                subscription.documents.values_list("document_type", flat=True)
+            )
+            missing_docs = [doc for doc in required_docs if doc not in uploaded_types]
+            return Response({
+                "message": "You already have a subscription in progress for this plan. Resuming document upload.",
+                "subscription_id": str(subscription.id),
+                "amount": str(subscription.amount_paid),
+                "status": subscription.status,
+                "required_documents": required_docs,
+                "missing_documents": missing_docs,
+            }, status=200)
+
+        # pending_payment
+        return Response({
+            "message": "You already have a subscription awaiting payment for this plan. Resuming checkout.",
+            "subscription_id": str(subscription.id),
+            "amount": str(subscription.amount_paid),
+            "status": subscription.status,
+        }, status=200)
 
 
 # Document Upload
