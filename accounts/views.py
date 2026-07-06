@@ -371,6 +371,7 @@ class PartnerMeView(APIView):
                 description="The authenticated user is not a partner admin or lacks a profile."
             ),
         },
+        tags=["Partner Management"]
     )
     def get(self, request):
         user = request.user

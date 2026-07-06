@@ -51,7 +51,7 @@ class InsurancePlanCreateSerializer(serializers.ModelSerializer):
             attrs["coverage_level"] = "standard"
 
         if category.name == "motor":
-            motor_levels = ["third_party", "third_party_fire_theft", "comprehensive"]
+            motor_levels = ["third_party", "tp_fire_theft", "comprehensive"]
             if coverage_level not in motor_levels:
                 raise serializers.ValidationError({
                     "coverage_level": "Motor plans must specify third_party, third_party_fire_theft, or comprehensive."

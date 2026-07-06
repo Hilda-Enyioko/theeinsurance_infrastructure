@@ -161,7 +161,10 @@ class ProviderPlanListCreateView(APIView):
         parameters=[
             OpenApiParameter(name="status", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter by status: 'active' or 'inactive'"),
         ],
-        responses={200: OpenApiResponse(description="List of insurance plans for the authenticated provider.")}
+        responses={200: OpenApiResponse(
+            description="List of insurance plans for the authenticated provider."
+        )},
+        tags=["Insurance Plans"]
     )
     def get(self, request):
         partner = get_partner_from_user(request.user)
