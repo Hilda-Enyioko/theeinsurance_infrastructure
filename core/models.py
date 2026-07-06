@@ -35,6 +35,8 @@ class Partner(models.Model):
     def save(self, *args, **kwargs):
         if not self.api_key:
             self.api_key = secrets.token_urlsafe(32)  # Generate a secure random API key
+        if not self.nomba_account_id:
+            self.nomba_account_id = ""
         super().save(*args, **kwargs)
 
 

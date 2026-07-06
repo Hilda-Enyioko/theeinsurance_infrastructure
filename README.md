@@ -1,110 +1,305 @@
 # TheeInsurance API
 
-A headless, API-first insurance distribution platform — "Stripe for insurance" for Nigeria. Companies integrate TheeInsurance into their products via API and offer insurance plans to their customers without building the insurance layer themselves.
+A headless, API-first insurance distribution platform — **"Stripe for insurance"** for Nigeria. Companies integrate TheeInsurance into their products via API and offer insurance plans to their customers without building the insurance layer themselves.
 
-Built for the **DevCareer x Nomba Hack4FUTO** hackathon by team **Meridian**.
+Built for the **DevCareer × Nomba Hack4FUTO Hackathon** by team **Meridian**.
 
-## What it does
+---
 
-TheeInsurance lets a partner (a provider, distributor, or platform) plug insurance distribution into their existing product. The platform handles multi-tenant partner onboarding, KYC, plan management, subscription lifecycle, payments, and automated renewal/dunning — exposed entirely through a REST API, so partners never need to build insurance infrastructure themselves.
+# What It Does
 
-Core capabilities:
+TheeInsurance enables providers, distributors, and digital platforms to embed insurance distribution into their existing products through a REST API. The platform manages:
 
-- **Multi-tenant partner architecture** — Provider Admins, Distributor Admins, and End Users scoped via `X-Partner-Key` headers, with role-based access control enforced across every app.
-- **KYC and onboarding** — partner and customer KYC submission, document upload, and staff review/approval flows.
-- **Plans API** — filterable, searchable, paginated insurance plan catalog.
-- **Payments** :
-  - **Nomba** — checkout with card tokenization for recurring charges, OAuth2 token lifecycle management, webhook verification (HMAC-SHA256 composite signature), and distributor payout splits via Nomba Transfers.
-- **Subscription lifecycle** — activation, renewal, and automated dunning on failed recurring charges, orchestrated via n8n.
-- **Service accounts** — staff-provisioned client-credential auth for non-human callers (n8n automation, schedulers) — no human login required for backend automation.
+- Multi-tenant partner onboarding
+- KYC
+- Insurance plan management
+- Subscription lifecycle
+- Payments
+- Automated renewals and dunning
 
-## Nomba Integration
+Partners never have to build insurance infrastructure themselves.
 
-TheeInsurance integrates Nomba for end-to-end recurring premium collection and distributor payouts.
+## Core Capabilities
 
-### Core Payment Flow
-- **Checkout** — customer pays premium via Nomba-hosted checkout, with internal `Transaction` record created before redirect.
-- **Tokenised cards** — card details tokenised on successful checkout and stored for recurring charges, gated behind explicit customer consent (`auto_charge_enabled`).
-- **Auto-charge on renewal** — stored token used to automatically charge the customer's card at each subscription renewal cycle.
-- **Dunning** — failed renewal charges trigger a retry sequence at day 1, 3, and 7, orchestrated via n8n; subscription lapses to `grace_period` → `lapsed` if all retries are exhausted.
-- **Transfers** — successful premium collection automatically splits and pays out to the provider and distributor via Nomba Transfers.
+- **Multi-tenant partner architecture**
+  - Provider Admins
+  - Distributor Admins
+  - End Users
+  - Scoped using `X-Partner-Key` with role-based access control.
 
-### Technical Execution
-- **Proration engine** — mid-cycle plan changes calculate a credit/debit adjustment rather than charging the full new premium.
-- **Subscription pause/resume** — pausing a subscription skips the next scheduled Nomba charge without cancelling the underlying token or policy.
+- **KYC & Onboarding**
+  - Partner onboarding
+  - Customer onboarding
+  - Document uploads
+  - Staff review and approval
 
-### Security & Reliability
-- **Idempotency keys** on every outbound Nomba API call, preventing duplicate charges/transfers on retry or network failure.
-- **Signature verification** on all inbound Nomba webhooks (HMAC-SHA256 composite-string signing, per Nomba's spec — not a raw-body signature like Interswitch).
-- Consent is checked and enforced server-side before any card token is persisted — no tokenisation without explicit `auto_charge_enabled`.
+- **Plans API**
+  - Searchable
+  - Filterable
+  - Paginated insurance catalog
 
-### Product UX & Clarity
-- Full Swagger/OpenAPI docs (via drf-spectacular) with example requests and responses for every Nomba-related endpoint.
-- Mock distributor portal demonstrating the partner and distributor dashboard experience, for the hackathon demo flow.
+- **Payments**
+  - **Nomba**
+    - Hosted checkout
+    - Card tokenization
+    - OAuth2 token lifecycle
+    - Webhook verification
+    - Split payouts
+  - **Interswitch**
+    - Quickteller Pay fallback for partners without a Nomba sub-account
 
-### n8n Automation
-- **Dunning workflow** — the single n8n-owned automation for this submission: listens for failed-charge webhooks, schedules day 1/3/7 retries, and fires the lapse/exhaustion event back to TheeInsurance when retries are exhausted.
+- **Automated Split Payouts**
+  - Platform fee
+  - Provider payout
+  - Distributor commission
 
-## Tech Stack
+- **Subscription Lifecycle**
+  - Activation
+  - Renewal
+  - Automated dunning via n8n
 
-- Django + Django REST Framework
-- SimpleJWT authentication (interactive users) + client-credentials token exchange (service accounts)
-- PostgreSQL via [Neon](https://neon.com) (staging/production), SQLite (local development)
-- [Cloudinary](https://cloudinary.com) for document storage — public delivery for non-sensitive assets, private signed delivery for KYC documents
-- Payment gateways: Interswitch Quickteller Pay, Nomba
-- Automation: [n8n](https://n8n.io) (notifications, dunning, payout orchestration)
-- Deployed on [Render](https://render.com)
+- **Service Accounts**
+  - Client Credentials authentication for automation (n8n, schedulers)
 
-## Project Structure
+---
 
+# Nomba Integration
+
+TheeInsurance integrates Nomba for recurring premium collection and split payouts.
+
+## Core Payment Flow
+
+- Hosted checkout
+- Card tokenization
+- Automatic recurring charges
+- Split payouts
+- Automated dunning (Day 1 → Day 3 → Day 7)
+
+---
+
+## Technical Execution
+
+- Subscription pause/resume
+- Renewal charging using stored tokens
+
+---
+
+## Security & Reliability
+
+- Idempotency keys
+- Webhook signature verification
+- Customer consent enforcement
+- Split eligibility validation
+
+---
+
+## Product UX
+
+- Swagger / OpenAPI documentation
+- Mock distributor portal
+
+---
+
+## n8n Automation
+
+Current automation:
+
+- Failed payment dunning workflow
+
+---
+
+# End-to-End Flow
+
+1. Partner onboarding
+2. Nomba sub-account linkage
+3. Plan creation
+4. Customer subscription
+5. Checkout
+6. Successful payment
+7. Payment webhook
+8. n8n notification
+9. Renewal due
+10. Successful renewal
+11. Failed renewal → Dunning
+12. Subscription lapses after retries
+
+---
+
+# Architecture
+
+```text
+                 Customer
+                     │
+                     ▼
+          Partner Application
+                     │
+             REST API Requests
+                     │
+                     ▼
+            TheeInsurance API
+                     │
+ ┌───────────────────┼────────────────────┐
+ │                   │                    │
+ ▼                   ▼                    ▼
+Plans API      Subscription API      Payments API
+ │                   │                    │
+ │                   │                    │
+ ▼                   ▼                    ▼
+PostgreSQL      Cloudinary         Nomba API
+                                      │
+                                      │
+                                      ▼
+                            Hosted Checkout
+                                      │
+                                      ▼
+                             Payment Webhook
+                                      │
+                                      ▼
+                           TheeInsurance API
+                                      │
+                                      ▼
+                               n8n Workflow
+                                      │
+                     ┌────────────────┴───────────────┐
+                     ▼                                ▼
+              Payment Notifications          Dunning Workflow
+                                              Day 1 Retry
+                                              Day 3 Retry
+                                              Day 7 Retry
+                                              Cancel Subscription
 ```
+
+---
+
+# Tech Stack
+
+- Django
+- Django REST Framework
+- SimpleJWT
+- PostgreSQL (Neon)
+- SQLite (development)
+- Cloudinary
+- Nomba
+- Interswitch Quickteller Pay
+- n8n
+- Render
+
+---
+
+# Project Structure
+
+```text
 theeinsurance-api/
-├── accounts/        # Users, partner admins, customer profiles, KYC, service accounts
-├── core/             # Partner model, shared utilities, Nomba auth service
-├── plans/            # Insurance plan catalog, distributor-provider access
-├── subscriptions/     # Policy subscriptions, documents, Nomba token storage
-├── payments/         # Transaction processing, gateway webhooks, callback logs
-├── claims/            # Claims handling
-└── webhooks/          # Outbound webhook dispatch to partners and n8n
+├── accounts/
+├── core/
+├── plans/
+├── subscriptions/
+├── payments/
+├── claims/
+└── webhooks/
 ```
 
-## Local Setup
+---
+
+# Local Setup
 
 ```bash
 git clone <repo-url>
+
 cd theeinsurance-api
+
 python -m venv venv
-source venv/bin/activate      # venv\Scripts\activate on Windows
+
+# Linux / macOS
+source venv/bin/activate
+
+# Windows
+venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
-Create a `.env` file using `.env.example` as reference.
+Create a `.env` file from `.env.example`.
 
-Then:
+Then run:
 
 ```bash
 python manage.py migrate
+
 python manage.py createsuperuser
+
 python manage.py runserver
 ```
 
-## Deployment
+---
 
-Staging is deployed on Render at every push to `staging`. Migrations run against Neon's **direct** (non-pooled) connection string as part of `build.sh` — PgBouncer's transaction-mode pooling breaks schema migrations, so this distinction matters. Runtime traffic uses the pooled connection.
+# Deployment
 
-## Service Accounts
+Staging is deployed on **Render**.
 
-Backend automation (n8n) authenticates via staff-provisioned service account credentials rather than a human login. A `super_admin` creates a credential through `POST /staff/service-accounts/`, which returns a `client_id` and `client_secret` **shown once**. The service account then exchanges these for a JWT via `POST /auth/service-account/token/`. Credentials can be revoked (not deleted, for audit purposes) via `POST /staff/service-accounts/<client_id>/revoke/`.
+Database:
 
-## API Docs
+- PostgreSQL (Neon)
+- Direct connection for migrations
+- Pooled connection for runtime traffic
 
-Schema is generated with `drf-spectacular`. Once running locally or on staging, see `/api/schema/swagger-ui/` (or your configured docs path) for the full interactive reference.
+---
 
-## Project Status
+# Service Accounts
 
-Active hackathon build for DevCareer x Nomba. Core partner infrastructure, payments (Nomba), and subscription lifecycle are built; dunning automation and full n8n handoff are in progress ahead of the July 4 submission deadline.
+Automation authenticates using Client Credentials.
 
-## Team — Meridian
+Flow:
 
-- **Hilda Enyioko** — Full-stack development (backend architecture, payments integration, API design)
-- **Chinedu Adindu** — AI/Automation engineering (n8n workflows: notifications, dunning, plan recommendation, provider analytics)
+1. Create service account
+2. Receive `client_id`
+3. Receive `client_secret`
+4. Exchange credentials for JWT
+5. Authenticate n8n
+
+---
+
+# API Documentation
+
+Swagger documentation is generated using **drf-spectacular**.
+
+Available at:
+
+```text
+/api/schema/swagger-ui/
+```
+
+---
+
+# Project Status
+
+Hackathon project for the **DevCareer × Nomba Hack4FUTO** Hackathon.
+
+Completed:
+
+- Partner infrastructure
+- Payments
+- Split payouts
+- Subscription lifecycle
+
+In Progress:
+
+- Dunning automation
+- Full n8n orchestration
+
+---
+
+# Team — Meridian
+
+- **Hilda Enyioko**
+  - Backend architecture
+  - Payments integration
+  - API design
+
+- **Chinedu Adindu**
+  - AI & Automation
+  - n8n workflows
+  - Notifications
+  - Dunning
+  - AI recommendations
+  - Provider analytics

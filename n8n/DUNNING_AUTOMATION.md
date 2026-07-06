@@ -1,4 +1,63 @@
-## n8n Automation — Integration Guide
+# Nomba Dunning & Subscription Retry Workflow
+
+An automated dunning system built for the Nomba Hackathon. It detects failed subscription charges and manages the retry lifecycle end-to-end — from the first failed payment through final cancellation — using **n8n** as the orchestration layer and a **Django** backend for state management and webhooks.
+
+## What It Does
+
+When a subscription charge fails, this workflow automatically:
+
+- Listens for `charge.failed` events from the Nomba Payment API via a Django webhook.
+- Retries the charge on a fixed schedule:
+  - **Day 1**
+  - **Day 3**
+  - **Day 7**
+- Cancels the subscription automatically if all three retry attempts are exhausted.
+
+This reduces manual follow-up on failed payments and recovers revenue that would otherwise be lost to silent subscription churn.
+
+## Architecture
+
+```text
+Nomba API  ── charge.failed ──▶ Django Webhook ──▶ n8n Workflow
+                                      │                  │
+                                      │                  ├── Day 1 retry
+                                      │                  ├── Day 3 retry
+                                      │                  ├── Day 7 retry
+                                      │                  │
+                                      └──── cancel subscription (after 3 failed attempts)
+```
+
+### Components
+
+- **n8n Cloud** — Orchestrates the retry schedule, branching logic, and calls to the Nomba renewal charge endpoint.
+- **Django (staging backend)** — Receives and validates incoming Nomba webhooks, exposes endpoints that n8n calls, and tracks retry state.
+- **Nomba API** — Payment provider; source of `charge.failed` events and target of retry/cancellation requests.
+
+## Repository Structure
+
+```text
+nomba-dunning-workflow/
+├── README.md                 # Project documentation
+├── workflow.json             # Exported n8n workflow (ready to import)
+├── docs/
+│   └── flow-diagram.svg      # Visual flowchart of the retry logic
+└── django/
+    ├── views.py              # Webhook receiver + retry/cancellation views
+    ├── urls.py               # URL routing for webhook endpoints
+    └── webhooks.py           # Helper functions for outbound webhook events
+```
+
+## How to Import the Workflow
+
+1. Open **n8n**.
+2. Navigate to **Workflows → Import from File**.
+3. Select `workflow.json`.
+4. Reconnect the required credentials:
+   - Nomba API (OAuth2 / short-lived JWT)
+   - Django backend base URL
+5. Activate the workflow.
+
+## Integration Guide
 
 **Base URL:** `https://theeinsurance-staging.onrender.com`
 

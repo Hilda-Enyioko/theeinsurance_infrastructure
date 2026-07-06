@@ -201,7 +201,7 @@ def _store_nomba_token(txn: Transaction, token_key: str) -> NombaTokenStore | No
             "card_type": card_type,
             "card_pan": card_pan,
             "customer_consented_to_auto_charge": True,
-            "consent_recorded_at": sub.updated_at or timezone.now(),
+            "consent_recorded_at": timezone.now(),
             "nomba_order_reference": txn.gateway_reference or "",
         }
     )
@@ -813,7 +813,7 @@ def charge_policy_renewal(subscription_id: str) -> dict:
         txn = Transaction.objects.create(
             amount=sub.plan.premium,
             currency='NGN',
-            initiated_by=sub.customer,
+            initiated_by=sub.customer.user,
             subscription=sub,
             payment_type=Transaction.PAYMENT_TYPE.RENEWAL,
             payment_status=Transaction.PAYMENT_STATUS.PENDING,
@@ -825,7 +825,7 @@ def charge_policy_renewal(subscription_id: str) -> dict:
         "order": {
             "orderReference": txn.reference,
             "customerEmail":  sub.customer.email,
-            "amount":         float(sub.plan.premium),
+            "amount":         str(sub.plan.premium),
             "currency":       "NGN",
             "accountId":      settings.NOMBA_SUB_ACCOUNT_ID,
             "callbackUrl":    settings.NOMBA_CALLBACK_URL,
