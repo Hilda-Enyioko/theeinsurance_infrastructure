@@ -193,3 +193,8 @@ class PartnerKYCSerializer(serializers.ModelSerializer):
             "status", "submitted_at",
         ]
         read_only_fields = ["id", "status", "submitted_at"]
+
+
+class PartnerMeSerializer(serializers.Serializer):
+    partner_type = serializers.CharField(source='partner_admin_profile.partner.partner_type')
+    partner_name = serializers.CharField(source='partner_admin_profile.partner.name')

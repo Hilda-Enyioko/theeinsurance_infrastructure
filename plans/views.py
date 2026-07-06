@@ -218,7 +218,8 @@ class ProviderPlanDetailView(APIView):
         responses={
             200: InsurancePlanSerializer,
             404: OpenApiResponse(description="Plan not found.")
-        }
+        },
+        tags=["Insurance Plans"]
     )
     def get(self, request, plan_id):
         partner = get_partner_from_user(request.user)
@@ -234,7 +235,8 @@ class ProviderPlanDetailView(APIView):
             200: InsurancePlanSerializer,
             400: OpenApiResponse(description="Validation error data."),
             404: OpenApiResponse(description="Plan not found.")
-        }
+        },
+        tags=["Insurance Plans"]
     )
     def patch(self, request, plan_id):
         partner = get_partner_from_user(request.user)
@@ -256,7 +258,8 @@ class ProviderPlanDetailView(APIView):
         responses={
             200: OpenApiResponse(description="Plan deactivated successfully."),
             404: OpenApiResponse(description="Plan not found.")
-        }
+        },
+        tags=["Insurance Plans"]
     )
     def delete(self, request, plan_id):
         partner = get_partner_from_user(request.user)

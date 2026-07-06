@@ -11,6 +11,7 @@ This module provides Django REST Framework (DRF) API endpoints handling:
 import secrets
 from rest_framework import status
 from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -18,7 +19,12 @@ from rest_framework_simplejwt.exceptions import TokenError
 from django.contrib.auth import authenticate
 from django.utils import timezone
 from datetime import timedelta
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
+from drf_spectacular.utils import (
+    extend_schema,
+    OpenApiParameter,
+    OpenApiTypes,
+    OpenApiResponse,
+)
 
 from accounts.permissions import IsSuperAdmin, IsPartnerAdmin, IsCustomer
 from core.throttles import IPRateThrottle, PartnerRateThrottle
@@ -32,6 +38,7 @@ from .serializers import (
     LoginSerializer,
     CustomerKYCSerializer,
     PartnerKYCSerializer,
+    PartnerMeSerializer,
 )
 
 
@@ -343,6 +350,41 @@ class LoginView(APIView):
             "email": user.email,
             "first_name": user.first_name,
         })
+
+
+class PartnerMeView(APIView):
+    """
+    GET /partner/me/
+    Returns partner_type and partner_name for the authenticated partner admin.
+    Called by the partner portal immediately after login.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        summary="Get authenticated partner details",
+        description="Retrieves the `partner_type` and `partner_name` for the currently logged-in partner admin.",
+        tags=["Partner"],
+        responses={
+            200: PartnerMeSerializer,
+            403: OpenApiResponse(
+                description="The authenticated user is not a partner admin or lacks a profile."
+            ),
+        },
+    )
+    def get(self, request):
+        user = request.user
+
+        if user.role != "partner_admin" or not hasattr(
+            user, "partner_admin_profile"
+        ):
+            return Response(
+                {"detail": "This account is not linked to a partner."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = PartnerMeSerializer(user)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 # Token Refresh

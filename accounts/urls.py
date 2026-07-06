@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     PartnerOnboardingView,
     PartnerKYCView,
+    PartnerMeView,
     CustomerRegisterView,
     CustomerKYCView,
     LoginView,
@@ -19,6 +20,7 @@ urlpatterns = [
     # partner
     path("partner/onboard/", PartnerOnboardingView.as_view(), name="partner-onboard"),
     path("partner/kyc/", PartnerKYCView.as_view(), name="partner-kyc"),
+    path('partner/me/', PartnerMeView.as_view(), name='partner-me'),
 
     # customer
     path("auth/register/", CustomerRegisterView.as_view(), name="customer-register"),
