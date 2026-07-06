@@ -313,7 +313,7 @@ class DistributorProviderAccessView(APIView):
         return Response({"providers": serializer.data})
 
 
-@extend_schema(
+@extend_schema_view(
     get=extend_schema(
         summary="Browse all providers",
         description="Fetch all active providers hosted on the platform along with the current distributor's access status to each.",
