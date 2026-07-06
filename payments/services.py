@@ -16,6 +16,7 @@ import requests
 from django.conf import settings
 from django.db import transaction as db_transaction
 from django.utils import timezone
+from django.db.models import Q
 
 from .models import CallbackLog, Transaction
 from core.nomba_auth import get_nomba_token, NombaAuthError    # noqa: E402
@@ -428,21 +429,24 @@ def verify_nomba_transaction(order_reference: str) -> dict:
     """
     Query Nomba to verify the status of a checkout transaction by orderReference.
 
+    Uses /v1/transactions/accounts/single, which works in both sandbox and
+    production (unlike /v1/checkout/transaction, which is production-only
+    and has a different response shape with no top-level `status` field).
+
+    Nomba returns HTTP 200 even for "transaction not found" (code: "01",
+    data: null) rather than a 4xx/5xx — raise_for_status() alone won't catch
+    that, so we check `code` explicitly and raise PaymentError with the
+    actual description instead of silently returning an empty data dict.
+
     Called from NombaCallbackView when the customer lands on the redirect
     before the webhook has landed, as a second source of truth — mirrors
     verify_transaction() for Interswitch.
-
-    Note: Nomba's transaction verification endpoints are production-only;
-    this will not return meaningful data against sandbox credentials.
     """
     try:
         token = get_nomba_token()
         response = requests.get(
-            f"{settings.NOMBA_BASE_URL}/checkout/transaction",
-            params={
-                "idType": "ORDER_REFERENCE",
-                "id": order_reference,
-            },
+            f"{settings.NOMBA_BASE_URL}/transactions/accounts/single",
+            params={"orderReference": order_reference},
             headers={
                 "Authorization": f"Bearer {token}",
                 "accountId": settings.NOMBA_ACCOUNT_ID,
@@ -450,7 +454,7 @@ def verify_nomba_transaction(order_reference: str) -> dict:
             timeout=30,
         )
         response.raise_for_status()
-        return response.json()
+        result = response.json()
     except NombaAuthError as e:
         logger.error("Nomba auth failed during verification for order_ref %s: %s", order_reference, str(e))
         raise PaymentError("Could not authenticate with payment gateway.")
@@ -460,6 +464,16 @@ def verify_nomba_transaction(order_reference: str) -> dict:
     except requests.RequestException as e:
         logger.error("Nomba verification error for order_ref %s: %s", order_reference, str(e))
         raise PaymentError("Could not verify transaction with gateway.")
+
+    if result.get("code") != "00":
+        description = result.get("description", "Unknown error")
+        logger.warning(
+            "Nomba verification non-00 for order_ref %s: code=%s description=%s",
+            order_reference, result.get("code"), description,
+        )
+        raise PaymentError(f"Verification failed: {description}")
+
+    return result
 
 # --------------------------------------------------------------------------------------
 
@@ -545,28 +559,43 @@ def process_nomba_webhook(payload: dict, signature: str) -> CallbackLog:
     _process_successful_payment, then persists the Nomba tokenKey for
     future automated charges.
 
+    Transaction lookup uses data.order, not data.transaction:
+      - data.order.orderReference = OUR merchant reference (Transaction.reference)
+      - data.order.orderId        = NOMBA's own ID (Transaction.gateway_reference)
+    Same naming convention Nomba uses on the checkout redirect. data.transaction.merchantTxRef
+    is unreliable (empty/truncated in practice) and should not be used for lookup.
+
     Note: no amount-mismatch check here — Nomba's checkout flow doesn't
     carry the same amount-tampering surface as Interswitch's redirect flow.
     Revisit if that assumption changes.
     """
-    timestamp = payload.get("_nomba_timestamp", "")  # passed in by the view from the header
+    timestamp = payload.get("_nomba_timestamp", "")
     verify_nomba_signature(payload, timestamp, signature)
 
     data = payload.get("data", {})
     transaction = data.get("transaction", {})
+    order = data.get("order", {})
 
-    transaction_ref = transaction.get("merchantTxRef") or transaction.get("transactionId", "")
+    order_reference = order.get("orderReference", "")
+    order_id = order.get("orderId", "")
     response_code = transaction.get("responseCode", "")
     gateway_ref = transaction.get("transactionId", "")
     is_success = payload.get("event_type") == "payment_success"
 
     with db_transaction.atomic():
-        try:
-            txn = Transaction.objects.select_for_update().get(reference=transaction_ref)
-        except Transaction.DoesNotExist:
-            logger.warning("Nomba webhook received for unknown reference: %s", transaction_ref)
+        txn = (
+            Transaction.objects.select_for_update()
+            .filter(Q(reference=order_reference) | Q(gateway_reference=order_id))
+            .first()
+        )
+
+        if not txn:
+            logger.warning(
+                "Nomba webhook received for unknown order (orderReference=%s, orderId=%s)",
+                order_reference, order_id,
+            )
             return CallbackLog.objects.create(
-                transaction_reference=transaction_ref,
+                transaction_reference=order_reference or order_id,
                 raw_payload=payload,
                 response_code=response_code,
                 status=CallbackLog.Status.FLAGGED,
@@ -580,7 +609,7 @@ def process_nomba_webhook(payload: dict, signature: str) -> CallbackLog:
 
         if is_duplicate:
             return CallbackLog.objects.create(
-                transaction_reference=transaction_ref,
+                transaction_reference=txn.reference,
                 raw_payload=payload,
                 response_code=response_code,
                 status=CallbackLog.Status.FLAGGED,
@@ -593,8 +622,8 @@ def process_nomba_webhook(payload: dict, signature: str) -> CallbackLog:
         if is_success:
             log = _process_successful_payment(txn, gateway_ref, payload, gateway="nomba")
 
-            token_key = data.get("tokenKey") or transaction.get("tokenKey")
-            if token_key:
+            token_key = data.get("tokenizedCardData", {}).get("tokenKey") or data.get("tokenKey")
+            if token_key and token_key != "N/A":
                 _store_nomba_token(txn, token_key)
 
             return log
@@ -606,7 +635,7 @@ def process_nomba_webhook(payload: dict, signature: str) -> CallbackLog:
         txn.save(update_fields=["payment_status", "gateway_reference", "gateway_response", "updated_at"])
 
         return CallbackLog.objects.create(
-            transaction_reference=transaction_ref,
+            transaction_reference=txn.reference,
             raw_payload=payload,
             response_code=response_code,
             status=CallbackLog.Status.FAILED,
