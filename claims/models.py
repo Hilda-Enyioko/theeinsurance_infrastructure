@@ -4,6 +4,7 @@ from django.db import models
 from subscriptions.models import PolicySubscription
 from accounts.models import CustomerProfile, PartnerAdmin
 from core.models import Partner
+from core.storage import KYCDocumentStorage
 
 def generate_claim_reference():
     return f"CLM-{secrets.token_hex(8).upper()}"
@@ -113,7 +114,10 @@ class ClaimDocument(models.Model):
         related_name="documents"
     )
     document_type = models.CharField(max_length=50, choices=DOCUMENT_TYPE_CHOICES)
-    file = models.FileField(upload_to="claims/documents/")
+    file = models.FileField(
+        upload_to="claims/documents/",
+        storage=KYCDocumentStorage(),
+    )
     uploaded_at = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):

@@ -2,6 +2,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from django.db.models import Q
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
+from drf_spectacular.types import OpenApiTypes
 
 from .models import InsuranceCategory, InsurancePlan, DistributorProviderAccess
 from .serializers import (
@@ -30,6 +32,11 @@ class InsuranceCategoryListView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="List active insurance categories",
+        responses={200: OpenApiResponse(description="A list of active categories.")},
+        tags=["Insurance Categories"]
+    )
     def get(self, request):
         categories = InsuranceCategory.objects.filter(is_active=True)
         serializer = InsuranceCategorySerializer(categories, many=True)
@@ -47,6 +54,19 @@ class InsurancePlanListView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="List and filter active insurance plans",
+        parameters=[
+            OpenApiParameter(name="category", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter by category name"),
+            OpenApiParameter(name="coverage_level", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter by coverage level"),
+            OpenApiParameter(name="min_premium", type=OpenApiTypes.DECIMAL, location=OpenApiParameter.QUERY, description="Minimum premium price"),
+            OpenApiParameter(name="max_premium", type=OpenApiTypes.DECIMAL, location=OpenApiParameter.QUERY, description="Maximum premium price"),
+            OpenApiParameter(name="search", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Search term for name or description"),
+            OpenApiParameter(name="sort_by", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, default="-created_at", description="Sort fields: premium, -premium, created_at, -created_at, name"),
+        ],
+        responses={200: OpenApiResponse(description="Filtered list of insurance plans.")},
+        tags=["Insurance Plans"]
+    )
     def get(self, request):
         partner = request.partner
 
@@ -96,6 +116,15 @@ class InsurancePlanDetailView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        operation_id="plans_retrieve_by_id",
+        summary="Retrieve an active plan detail",
+        responses={
+            200: InsurancePlanSerializer,
+            404: OpenApiResponse(description="Plan not found or access denied.")
+        },
+        tags=["Insurance Plans"]
+    )
     def get(self, request, plan_id):
         partner = request.partner
 
@@ -127,6 +156,13 @@ class ProviderPlanListCreateView(APIView):
     permission_classes = [IsProviderAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Provider Admin: List managed plans",
+        parameters=[
+            OpenApiParameter(name="status", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter by status: 'active' or 'inactive'"),
+        ],
+        responses={200: OpenApiResponse(description="List of insurance plans for the authenticated provider.")}
+    )
     def get(self, request):
         partner = get_partner_from_user(request.user)
         plans = InsurancePlan.objects.filter(provider=partner)
@@ -140,6 +176,15 @@ class ProviderPlanListCreateView(APIView):
         serializer = InsurancePlanSerializer(plans, many=True)
         return Response({"plans": serializer.data})
 
+    @extend_schema(
+        summary="Provider Admin: Create a new plan",
+        request=InsurancePlanCreateSerializer,
+        responses={
+            201: InsurancePlanSerializer,
+            400: OpenApiResponse(description="Validation error data.")
+        },
+        tags=["Insurance Plans"]
+    )
     def post(self, request):
         partner = get_partner_from_user(request.user)
         serializer = InsurancePlanCreateSerializer(
@@ -167,6 +212,14 @@ class ProviderPlanDetailView(APIView):
         except InsurancePlan.DoesNotExist:
             return None
 
+    @extend_schema(
+        operation_id="partner_plans_retrieve_by_id",
+        summary="Provider Admin: Retrieve a managed plan details",
+        responses={
+            200: InsurancePlanSerializer,
+            404: OpenApiResponse(description="Plan not found.")
+        }
+    )
     def get(self, request, plan_id):
         partner = get_partner_from_user(request.user)
         plan = self.get_object(plan_id, partner)
@@ -174,6 +227,15 @@ class ProviderPlanDetailView(APIView):
             return Response({"error": "Plan not found."}, status=404)
         return Response(InsurancePlanSerializer(plan).data)
 
+    @extend_schema(
+        summary="Provider Admin: Partially update a plan",
+        request=InsurancePlanCreateSerializer,
+        responses={
+            200: InsurancePlanSerializer,
+            400: OpenApiResponse(description="Validation error data."),
+            404: OpenApiResponse(description="Plan not found.")
+        }
+    )
     def patch(self, request, plan_id):
         partner = get_partner_from_user(request.user)
         plan = self.get_object(plan_id, partner)
@@ -189,6 +251,13 @@ class ProviderPlanDetailView(APIView):
             return Response(InsurancePlanSerializer(plan).data)
         return Response(serializer.errors, status=400)
 
+    @extend_schema(
+        summary="Provider Admin: Soft-delete a plan",
+        responses={
+            200: OpenApiResponse(description="Plan deactivated successfully."),
+            404: OpenApiResponse(description="Plan not found.")
+        }
+    )
     def delete(self, request, plan_id):
         partner = get_partner_from_user(request.user)
         plan = self.get_object(plan_id, partner)
@@ -210,6 +279,11 @@ class DistributorProviderAccessView(APIView):
     permission_classes = [IsDistributorAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Distributor Admin: View accessible providers",
+        responses={200: OpenApiResponse(description="List of allowed provider accesses.")},
+        tags=["Insurance Plans: Distributor Access"]
+    )
     def get(self, request):
         partner = get_partner_from_user(request.user)
         access = DistributorProviderAccess.objects.filter(distributor=partner)
@@ -227,6 +301,16 @@ class PlanRecommendationView(APIView):
     permission_classes = [IsServiceAccount]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="AI Engine: Get plan recommendations",
+        parameters=[
+            OpenApiParameter(name="category", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter recommendations by category"),
+            OpenApiParameter(name="budget", type=OpenApiTypes.DECIMAL, location=OpenApiParameter.QUERY, description="Maximum premium budget allowed"),
+            OpenApiParameter(name="coverage_level", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Target coverage level"),
+        ],
+        responses={200: OpenApiResponse(description="Ranked and filtered recommended plans with context information.")},
+        tags=["Insurance Plans: AI Recommendations"]
+    )
     def get(self, request):
         partner = request.partner
         category = request.query_params.get('category')
@@ -272,6 +356,11 @@ class PlanContextView(APIView):
     permission_classes = [IsServiceAccount]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="AI Engine: Fetch structured system prompt context",
+        responses={200: OpenApiResponse(description="Flattened, highly compressed plan parameters tailored for LLM consumption.")},
+        tags=["Insurance Plans: AI Recommendations"]
+    )
     def get(self, request):
         partner = request.partner
 

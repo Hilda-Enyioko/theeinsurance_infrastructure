@@ -3,6 +3,7 @@ from .views import (
     CustomerSubscriptionListView,
     CustomerSubscriptionCreateView,
     CustomerSubscriptionDetailView,
+    SubscriptionDocumentUploadView,
     PaymentVerificationView,
     PartnerSubscriptionListView,
 )
@@ -12,6 +13,7 @@ urlpatterns = [
     path("subscriptions/", CustomerSubscriptionListView.as_view(), name="subscription-list"),
     path("subscriptions/create/", CustomerSubscriptionCreateView.as_view(), name="subscription-create"),
     path("subscriptions/<uuid:subscription_id>/", CustomerSubscriptionDetailView.as_view(), name="subscription-detail"),
+    path("subscriptions/<uuid:subscription_id>/documents/", SubscriptionDocumentUploadView.as_view(), name="subscription-documents"),
     path("subscriptions/<uuid:subscription_id>/verify-payment/", PaymentVerificationView.as_view(), name="payment-verify"),
 
     # partner admin

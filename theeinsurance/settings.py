@@ -16,6 +16,7 @@ from datetime import timedelta
 from decouple import config  # type: ignore
 import dotenv
 import dj_database_url
+from corsheaders.defaults import default_headers
 
 dotenv.load_dotenv()
 
@@ -44,13 +45,15 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
-    'django.contrib.staticfiles',
 
     # third party apps
     'rest_framework',
     'corsheaders',
     'drf_spectacular',
     'drf_spectacular_sidecar',
+    'cloudinary_storage',
+    'cloudinary',
+    'django.contrib.staticfiles',
 
     # local apps
     'accounts',
@@ -66,6 +69,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware', 
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -103,6 +107,11 @@ DATABASES = {
     #     'ENGINE': 'django.db.backends.sqlite3',
     #     'NAME': BASE_DIR / 'db.sqlite3',
     # }
+        "default": dj_database_url.parse(
+        os.getenv("DATABASE_URL"),
+        conn_max_age=600,
+        conn_health_checks=True,
+    )
 }
 
 
@@ -173,19 +182,28 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://mock-insurance-customer-portal.vercel.app",
 ]
 
-CORS_ALLOWED_HEADERS = [
-    'authorization',
-    'content-type',
-    'x-partner-key',
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "x-partner-key",
 ]
+print("CORS_ALLOWED_HEADERS =", CORS_ALLOW_HEADERS)
+
+CORS_ALLOW_CREDENTIALS = True
 
 AUTH_USER_MODEL = "accounts.CustomUser"
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
+CLOUDINARY_STORAGE = {
+    "CLOUD_NAME": os.getenv("CLOUDINARY_CLOUD_NAME"),
+    "API_KEY": os.getenv("CLOUDINARY_API_KEY"),
+    "API_SECRET": os.getenv("CLOUDINARY_API_SECRET"),
+}
+
+DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
 
 # CACHE CONFIGURATION
 # Dev: LocMemCache (default, no setup needed)
@@ -221,6 +239,7 @@ NOMBA_CALLBACK_URL    = config("NOMBA_CALLBACK_URL")
 
 # Payment webhook
 N8N_WEBHOOK_PAYMENT_URL = config("N8N_WEBHOOK_PAYMENT_URL")
+N8N_WEBHOOK_DUNNING_URL = config("N8N_WEBHOOK_DUNNING_URL")
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'TheeInsurance API',
@@ -245,4 +264,30 @@ SPECTACULAR_SETTINGS = {
     },
     "OPERATION_ID_NAMING_STRATEGY": "operation_id",
     "SCHEMA_PATH_PREFIX": r"/api/v[0-9]",
+    "COMPONENT_SPLIT_REQUEST": True,
+    "ENUM_NAME_OVERRIDES": {
+        "ClaimStatusEnum": "claims.models.Claim.STATUS_CHOICES",
+        "SubscriptionStatusEnum": "subscriptions.models.PolicySubscription.STATUS_CHOICES",
+        "PlanCoverageLevelEnum": "plans.models.InsurancePlan.COVERAGE_LEVELS",
+        "InsuranceCategoryEnum": "plans.models.InsuranceCategory.CATEGORY_CHOICES",
+        "SubscriptionDocumentTypeChoicesEnum": "subscriptions.models.SubscriptionDocument.DOCUMENT_TYPE_CHOICES",
+        "CallbackLogStatusEnum": "payments.models.CallbackLog.Status",
+        "KYCReviewStatusEnum": "accounts.models.CustomerKYC.STATUS_CHOICES",  # covers both CustomerKYC and PartnerKYC
+        "CustomerKYCTypeEnum": "accounts.models.CustomerKYC.ID_TYPE_CHOICES",
+    },
 }
+
+STORAGES = {
+    "default": {
+        "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
+
+# Legacy alias — required because django-cloudinary-storage's collectstatic
+# override reads STATICFILES_STORAGE directly instead of STORAGES["staticfiles"]
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+WHITENOISE_MANIFEST_STRICT = False

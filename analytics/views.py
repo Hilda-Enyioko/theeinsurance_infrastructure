@@ -1,6 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.db.models import Count, Sum
+from drf_spectacular.utils import extend_schema
 
 from subscriptions.models import PolicySubscription
 from accounts.models import CustomerProfile
@@ -25,6 +26,64 @@ class ProviderSummaryView(APIView):
     permission_classes = [IsProviderAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Get Provider Analytics Summary",
+        description=(
+            "Calculates and returns aggregated metrics for the authenticated insurance provider, "
+            "including total revenue, payouts, subscription status breakdown, top-performing plans, "
+            "and performance across different distributors."
+        ),
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "object",
+                        "properties": {
+                            "total_policies": {"type": "integer", "example": 1540},
+                            "total_revenue": {"type": "string", "example": "7700000.00"},
+                            "total_payout": {"type": "string", "example": "6160000.00"},
+                        }
+                    },
+                    "status_breakdown": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "status": {"type": "string", "example": "active"},
+                                "count": {"type": "integer", "example": 1200}
+                            }
+                        }
+                    },
+                    "top_plans": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "plan__name": {"type": "string", "example": "Comprehensive Auto Shield"},
+                                "total_sold": {"type": "integer", "example": 450},
+                                "revenue": {"type": "string", "example": "2250000.00"}
+                            }
+                        }
+                    },
+                    "distributor_breakdown": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "distributor__name": {"type": "string", "example": "Nomba Finance"},
+                                "total_sold": {"type": "integer", "example": 310},
+                                "commission": {"type": "string", "example": "310000.00"}
+                            }
+                        }
+                    }
+                }
+            },
+            401: {"description": "Unauthorized access."},
+            403: {"description": "Permission denied. Requires Provider Admin privileges."}
+        },
+        tags=["Analytics - Provider"]
+    )
     def get(self, request):
         partner = get_partner_from_user(request.user)
         subscriptions = PolicySubscription.objects.filter(provider=partner)
@@ -70,6 +129,31 @@ class ProviderSubscriptionsTrendsView(APIView):
     permission_classes = [IsProviderAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Get Provider Subscription Trends",
+        description="Returns month-on-month aggregations of volumes and revenue generated over time.",
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "trends": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "month": {"type": "string", "example": "2026-06"},
+                                "count": {"type": "integer", "example": 240},
+                                "revenue": {"type": "string", "example": "1200000.00"}
+                            }
+                        }
+                    }
+                }
+            },
+            401: {"description": "Unauthorized access."},
+            403: {"description": "Permission denied. Requires Provider Admin privileges."}
+        },
+        tags=["Analytics - Provider"]
+    )
     def get(self, request):
         partner = get_partner_from_user(request.user)
 
@@ -94,6 +178,53 @@ class DistributorSummaryView(APIView):
     permission_classes = [IsDistributorAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Get Distributor Analytics Summary",
+        description=(
+            "Calculates and returns metrics for the authenticated partner distributor, "
+            "including total policies sold, commissions earned, user acquisition count, "
+            "and performance segmented by top insurance providers."
+        ),
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "object",
+                        "properties": {
+                            "total_policies_facilitated": {"type": "integer", "example": 820},
+                            "total_commissions_earned": {"type": "string", "example": "820000.00"},
+                            "total_customers": {"type": "integer", "example": 750}
+                        }
+                    },
+                    "top_providers": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "provider__name": {"type": "string", "example": "Leadway Assurance"},
+                                "total_sold": {"type": "integer", "example": 500}
+                            }
+                        }
+                    },
+                    "top_plans": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "plan__name": {"type": "string", "example": "Third Party Premium"},
+                                "plan__category__name": {"type": "string", "example": "Auto"},
+                                "total_sold": {"type": "integer", "example": 380}
+                            }
+                        }
+                    }
+                }
+            },
+            401: {"description": "Unauthorized access."},
+            403: {"description": "Permission denied. Requires Distributor Admin privileges."}
+        },
+        tags=["Analytics - Distributor"]
+    )
     def get(self, request):
         partner = get_partner_from_user(request.user)
         subscriptions = PolicySubscription.objects.filter(distributor=partner)
@@ -132,6 +263,31 @@ class DistributorSubscriptionsTrendsView(APIView):
     permission_classes = [IsDistributorAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Get Distributor Facilitation Trends",
+        description="Returns month-on-month breakdown of customer conversions and corresponding commissions earned.",
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "trends": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "month": {"type": "string", "example": "2026-06"},
+                                "count": {"type": "integer", "example": 145},
+                                "commissions": {"type": "string", "example": "145000.00"}
+                            }
+                        }
+                    }
+                }
+            },
+            401: {"description": "Unauthorized access."},
+            403: {"description": "Permission denied. Requires Distributor Admin privileges."}
+        },
+        tags=["Analytics - Distributor"]
+    )
     def get(self, request):
         partner = get_partner_from_user(request.user)
 

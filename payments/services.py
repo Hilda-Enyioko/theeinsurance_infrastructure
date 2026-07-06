@@ -319,9 +319,9 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
     # 3. Create an internal Transaction record before calling Nomba
     with db_transaction.atomic():
         txn = Transaction.objects.create(
-            amount=sub.plan.premium_amount,
+            amount=sub.plan.premium,
             currency='NGN',
-            initiated_by=sub.customer,
+            initiated_by=sub.customer.user,
             subscription=sub,
             payment_type=Transaction.PAYMENT_TYPE.NEW_SUBSCRIPTION,
             payment_status=Transaction.PAYMENT_STATUS.PENDING,
@@ -332,9 +332,9 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
     order_payload = {
         "order": {
             "orderReference":   txn.reference,
-            "customerId":       str(sub.customer.id),
-            "customerEmail":    sub.customer.email,
-            "amount":           str(sub.plan.premium_amount),
+            "customerId":       str(sub.customer.user.id),
+            "customerEmail":    sub.customer.user.email,
+            "amount":           str(sub.plan.premium),
             "currency":         "NGN",
             "accountId":        settings.NOMBA_SUB_ACCOUNT_ID,
             "callbackUrl":      settings.NOMBA_CALLBACK_URL,
@@ -392,7 +392,7 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
         "checkout_link":     checkout_link,
         "order_reference":   order_reference,
         "transaction_ref":   txn.reference,
-        "amount":            str(sub.plan.premium_amount),
+        "amount":            str(sub.plan.premium),
         "currency":          "NGN",
     }
 
@@ -421,6 +421,47 @@ def verify_transaction(reference: str) -> dict:
     except requests.RequestException as e:
         logger.error("Interswitch verification error for ref %s: %s", reference, str(e))
         raise PaymentError("Could not verify transaction with gateway.")
+
+
+
+def verify_nomba_transaction(order_reference: str) -> dict:
+    """
+    Query Nomba to verify the status of a checkout transaction by orderReference.
+
+    Called from NombaCallbackView when the customer lands on the redirect
+    before the webhook has landed, as a second source of truth — mirrors
+    verify_transaction() for Interswitch.
+
+    Note: Nomba's transaction verification endpoints are production-only;
+    this will not return meaningful data against sandbox credentials.
+    """
+    try:
+        token = get_nomba_token()
+        response = requests.get(
+            f"{settings.NOMBA_BASE_URL}/checkout/transaction",
+            params={
+                "idType": "ORDER_REFERENCE",
+                "id": order_reference,
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "accountId": settings.NOMBA_ACCOUNT_ID,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+    except NombaAuthError as e:
+        logger.error("Nomba auth failed during verification for order_ref %s: %s", order_reference, str(e))
+        raise PaymentError("Could not authenticate with payment gateway.")
+    except requests.Timeout:
+        logger.error("Nomba verification timed out for order_ref: %s", order_reference)
+        raise PaymentError("Verification timed out.")
+    except requests.RequestException as e:
+        logger.error("Nomba verification error for order_ref %s: %s", order_reference, str(e))
+        raise PaymentError("Could not verify transaction with gateway.")
+
+# --------------------------------------------------------------------------------------
 
 
 # Webhook Processing Functions
@@ -657,7 +698,7 @@ def charge_policy_renewal(subscription_id: str) -> dict:
     #    we have an audit trail even if the network call fails.
     with db_transaction.atomic():
         txn = Transaction.objects.create(
-            amount=sub.plan.premium_amount,
+            amount=sub.plan.premium,
             currency='NGN',
             initiated_by=sub.customer,
             subscription=sub,
@@ -671,7 +712,7 @@ def charge_policy_renewal(subscription_id: str) -> dict:
         "order": {
             "orderReference": txn.reference,
             "customerEmail":  sub.customer.email,
-            "amount":         float(sub.plan.premium_amount),
+            "amount":         float(sub.plan.premium),
             "currency":       "NGN",
             "accountId":      settings.NOMBA_SUB_ACCOUNT_ID,
             "callbackUrl":    settings.NOMBA_CALLBACK_URL,
@@ -735,13 +776,13 @@ def charge_policy_renewal(subscription_id: str) -> dict:
 
         logger.info(
             "Auto-renewal successful: subscription=%s txn=%s amount=%s",
-            sub.id, txn.reference, sub.plan.premium_amount,
+            sub.id, txn.reference, sub.plan.premium,
         )
         return {
             "outcome":          "success",
             "transaction_ref":  txn.reference,
             "subscription_id":  str(sub.id),
-            "amount":           str(sub.plan.premium_amount),
+            "amount":           str(sub.plan.premium),
         }
 
     else:
@@ -842,7 +883,7 @@ def _fire_n8n_payment_webhook(txn: Transaction) -> None:
 
     try:
         response = requests.post(
-            settings.N8N_WEBHOOK_URL,
+            settings.N8N_WEBHOOK_PAYMENT_URL,
             json=payload,
             timeout=10,
         )

@@ -17,6 +17,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from django.contrib.auth import authenticate
 from django.utils import timezone
+from datetime import timedelta
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 
 from accounts.permissions import IsSuperAdmin, IsPartnerAdmin, IsCustomer
 from core.throttles import IPRateThrottle, PartnerRateThrottle
@@ -39,7 +41,6 @@ def get_partner_from_user(user):
     Extract the associated partner entity from a user instance 
     if they are a partner admin.
     """
-
     if hasattr(user, 'partner_admin_profile'):
         return user.partner_admin_profile.partner
     return None
@@ -50,7 +51,6 @@ def generate_tokens(user, partner_id=None):
     Generate SimpleJWT access and refresh tokens 
     embedded with role and tenant claims.
     """
-
     refresh = RefreshToken.for_user(user)
     refresh["role"] = user.role
     if partner_id:
@@ -71,12 +71,24 @@ class PartnerOnboardingView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [IPRateThrottle]
 
+    @extend_schema(
+        summary="Self-register New Partner",
+        description="Accepts corporate registration parameters, spins up an inactive Partner profile, and issues an API key for subsequent configuration steps.",
+        request=PartnerOnboardingSerializer,
+        responses={
+            201: {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string"},
+                    "partner_id": {"type": "string", "format": "uuid"},
+                    "api_key": {"type": "string", "description": "Shown once only."}
+                }
+            },
+            400: {"description": "Validation errors."}
+        },
+        tags=["Partner Management"]
+    )
     def post(self, request):
-        """
-        Accepts registration parameters, spins up an inactive Partner profile, 
-        and issues an API key for subsequent configuration steps
-        """
-
         serializer = PartnerOnboardingSerializer(data=request.data)
         if serializer.is_valid():
             partner = serializer.save()
@@ -98,12 +110,22 @@ class PartnerKYCView(APIView):
     permission_classes = [IsPartnerAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Submit Partner KYC",
+        description="Allows corporate administrators to upload operational documentation for corporate review.",
+        request={
+            "multipart/form-data": PartnerKYCSerializer,
+        },
+        responses={
+            201: {
+                "type": "object",
+                "properties": {"message": {"type": "string"}}
+            },
+            400: {"description": "KYC already submitted or validation errors."}
+        },
+        tags=["Partner Management"],
+    )
     def post(self, request):
-        """
-        Allows verified corporate administrators to upload operational documentation 
-        for administrative review, or pull down their current submission state.
-        """
-
         partner = get_partner_from_user(request.user)
 
         if hasattr(partner, 'kyc'):
@@ -129,11 +151,16 @@ class PartnerKYCView(APIView):
 
         return Response(serializer.errors, status=400)
 
+    @extend_schema(
+        summary="Retrieve Partner KYC Status",
+        description="Allows authenticated corporate administrators to pull down their own current KYC submission state.",
+        responses={
+            200: PartnerKYCSerializer,
+            404: {"description": "No KYC documentation submitted yet."}
+        },
+        tags=["Partner Management"]
+    )
     def get(self, request):
-        """
-        Allow only authenticated partners retrieve KYC dicuments they own.
-        """
-
         partner = get_partner_from_user(request.user)
 
         if not hasattr(partner, 'kyc'):
@@ -153,12 +180,29 @@ class CustomerRegisterView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [IPRateThrottle]
 
+    @extend_schema(
+        summary="Customer Registration",
+        description="Uses tenant context attached to the request (via upstream middleware parsing) to bind the newly registered customer account to the parent organization.",
+        request=CustomerRegistrationSerializer,
+        responses={
+            201: {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string"},
+                    "tokens": {
+                        "type": "object",
+                        "properties": {
+                            "refresh": {"type": "string"},
+                            "access": {"type": "string"}
+                        }
+                    }
+                }
+            },
+            400: {"description": "Validation errors."}
+        },
+        tags=["Customer Management"]
+    )
     def post(self, request):
-        """
-        Uses tenant context attached to the request (via upstream middleware parsing)
-        to bind the newly registered customer account to the parent organization.
-        """
-
         serializer = CustomerRegistrationSerializer(
             data=request.data,
             context={"partner": request.partner}
@@ -183,11 +227,23 @@ class CustomerKYCView(APIView):
     permission_classes = [IsCustomer]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Submit Customer KYC",
+        description="Allows registered consumers to submit required verification and identification metrics.",
+        request={
+            "multipart/form-data": CustomerKYCSerializer,
+        },
+        responses={
+            201: {
+                "type": "object",
+                "properties": {"message": {"type": "string"}}
+            },
+            400: {"description": "KYC already submitted or validation errors."},
+            404: {"description": "Customer profile not found within the current tenant scope."}
+        },
+        tags=["Customer Management"]
+    )
     def post(self, request):
-        """
-        Allows registered system consumers to submit required identification metrics.
-        """
-
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
         except CustomerProfile.DoesNotExist:
@@ -202,11 +258,16 @@ class CustomerKYCView(APIView):
             return Response({"message": "KYC submitted successfully."}, status=201)
         return Response(serializer.errors, status=400)
 
+    @extend_schema(
+        summary="Retrieve Customer KYC Details",
+        description="Allows an authenticated consumer to inspect their background check and identity records inside the scope of the current partner.",
+        responses={
+            200: CustomerKYCSerializer,
+            404: {"description": "Customer profile or KYC records not found."}
+        },
+        tags=["Customer Management"]
+    )
     def get(self, request):
-        """
-        Inspect Customer's background check records inside the scope of the current partner
-        """
-
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
         except CustomerProfile.DoesNotExist:
@@ -229,12 +290,33 @@ class LoginView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [IPRateThrottle]
 
+    @extend_schema(
+        summary="Shared Portal Authentication Login",
+        description="Verifies credentials for customers and partner admins, returning signed authentication payloads appended with role authorizations and multi-tenant scoping claims.",
+        request=LoginSerializer,
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "tokens": {
+                        "type": "object",
+                        "properties": {
+                            "refresh": {"type": "string"},
+                            "access": {"type": "string"}
+                        }
+                    },
+                    "role": {"type": "string"},
+                    "email": {"type": "string", "format": "email"},
+                    "first_name": {"type": "string"}
+                }
+            },
+            400: {"description": "Validation errors."},
+            401: {"description": "Invalid email or password."},
+            403: {"description": "Account is inactive."}
+        },
+        tags=["Authentication"]
+    )
     def post(self, request):
-        """
-        Verifies credentials and returns signed authentication payloads appended 
-        with role authorizations and multi-tenant scoping claims.
-        """
-
         serializer = LoginSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
@@ -272,12 +354,31 @@ class TokenRefreshView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [IPRateThrottle]
 
+    @extend_schema(
+        summary="Refresh Access Token",
+        description="Validates submitted refresh states to hand out fresh access hashes, shielding downstream views from re-authentication requirements.",
+        request={
+            "application/json": {
+                "type": "object",
+                "required": ["refresh"],
+                "properties": {
+                    "refresh": {"type": "string", "description": "The refresh token string."}
+                }
+            }
+        },
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "access": {"type": "string"}
+                }
+            },
+            400: {"description": "Refresh token is missing."},
+            401: {"description": "Token is invalid or expired."}
+        },
+        tags=["Authentication"]
+    )
     def post(self, request):
-        """
-        Validates submitted refresh states to hand out fresh access hashes, 
-        shielding downstream views from re-authentication requirements.
-        """
-
         refresh_token = request.data.get("refresh")
         if not refresh_token:
             return Response({"error": "Refresh token is required."}, status=400)
@@ -300,12 +401,33 @@ class StaffLoginView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [IPRateThrottle]
 
+    @extend_schema(
+        summary="Internal Staff Login",
+        description="Enforces strict structural checks to confirm the user possesses elevated global administrative roles (`super_admin`) before dispatching tokens.",
+        request=LoginSerializer,
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "tokens": {
+                        "type": "object",
+                        "properties": {
+                            "refresh": {"type": "string"},
+                            "access": {"type": "string"}
+                        }
+                    },
+                    "role": {"type": "string"},
+                    "email": {"type": "string", "format": "email"},
+                    "first_name": {"type": "string"}
+                }
+            },
+            400: {"description": "Validation errors."},
+            401: {"description": "Invalid email or password."},
+            403: {"description": "Account is inactive or user lacks super_admin role."}
+        },
+        tags=["Staff Administration Operations"]
+    )
     def post(self, request):
-        """
-        Enforces strict structural checks to confirm the user possesses 
-        elevated global administrative roles (`super_admin`) before dispatching tokens.
-        """
-        
         serializer = LoginSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
@@ -345,12 +467,36 @@ class StaffPartnerKYCReviewView(APIView):
     permission_classes = [IsSuperAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="List or Retrieve Partner KYC Submissions",
+        description="Allows internal staff members to query incoming organizational applications. Handles both full lists filtered by status and singular lookups based on path parameters.",
+        parameters=[
+            OpenApiParameter(
+                name="partner_id",
+                type=OpenApiTypes.UUID,
+                location=OpenApiParameter.PATH,
+                required=False,
+                description="UUID of the specific partner to inspect."
+            ),
+            OpenApiParameter(
+                name="status",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                default="pending",
+                description="Filter list lookup results by submission status (e.g., pending, approved, rejected)."
+            )
+        ],
+        responses={
+            200: {
+                "type": "object",
+                "description": "Returns single kyc_submission object or a list under kyc_submissions key."
+            },
+            404: {"description": "KYC submission not found for the designated partner."}
+        },
+        tags=["Staff Administration Operations"]
+    )
     def get(self, request, partner_id=None):
-        """
-        Allows internal staff members to query incoming organizational applications.
-        Handles both full lists and singular lookups based on partner_id.
-        """
-        # Handle individual detail lookup
         if partner_id:
             try:
                 k = PartnerKYC.objects.select_related('partner').get(partner__id=partner_id)
@@ -367,7 +513,6 @@ class StaffPartnerKYCReviewView(APIView):
             except PartnerKYC.DoesNotExist:
                 return Response({"error": "KYC submission not found for this partner."}, status=404)
 
-        # Handle List lookup (Fallback when partner_id is None)
         status_filter = request.query_params.get("status", "pending")
         kyc_list = PartnerKYC.objects.filter(status=status_filter).select_related('partner')
 
@@ -385,11 +530,43 @@ class StaffPartnerKYCReviewView(APIView):
 
         return Response({"kyc_submissions": data})
 
+    @extend_schema(
+        summary="Review Partner KYC Submission",
+        description="Issue corporate state confirmations (approve/reject), record internal review notes, and toggle the partner's production operational state.",
+        parameters=[
+            OpenApiParameter(
+                name="partner_id",
+                type=OpenApiTypes.UUID,
+                location=OpenApiParameter.PATH,
+                required=True,
+                description="UUID of the partner under review."
+            )
+        ],
+        request={
+            "application/json": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {"type": "string", "enum": ["approve", "reject"]},
+                    "note": {"type": "string", "description": "Reason or context for the review status decision."}
+                }
+            }
+        },
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string"},
+                    "partner": {"type": "string"},
+                    "is_active": {"type": "boolean"}
+                }
+            },
+            400: {"description": "Invalid action value supplied."},
+            404: {"description": "KYC record not found."}
+        },
+        tags=["Staff Administration Operations"]
+    )
     def patch(self, request, partner_id):
-        """
-        Issue state confirmations (approve/reject), 
-        record notes, and toggle partner operational states.
-        """
         try:
             kyc = PartnerKYC.objects.get(partner__id=partner_id)
         except PartnerKYC.DoesNotExist:
@@ -432,6 +609,7 @@ class StaffPartnerKYCReviewView(APIView):
             "is_active": kyc.partner.is_active,
         })
 
+
 # Staff — Distributor Provider Access
 
 class StaffDistributorAccessView(APIView):
@@ -442,12 +620,33 @@ class StaffDistributorAccessView(APIView):
     permission_classes = [IsSuperAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Grant Distributor-Provider Access Line",
+        description="Handles creation and activation of secure business access lines between downstream insurance 'distributors' and core policy 'providers'.",
+        request={
+            "application/json": {
+                "type": "object",
+                "required": ["distributor_id", "provider_id"],
+                "properties": {
+                    "distributor_id": {"type": "string", "format": "uuid"},
+                    "provider_id": {"type": "string", "format": "uuid"}
+                }
+            }
+        },
+        responses={
+            201: {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string"},
+                    "created": {"type": "boolean"}
+                }
+            },
+            400: {"description": "Missing parameters."},
+            404: {"description": "Designated partner nodes not found."}
+        },
+        tags=["Staff Administration Operations"]
+    )
     def post(self, request):
-        """
-        Handles creation, enabling of secure access lines 
-        between downstream insurance "distributors" and core policy "providers".
-        """
-
         from plans.models import DistributorProviderAccess
 
         distributor_id = request.data.get("distributor_id")
@@ -484,12 +683,26 @@ class StaffDistributorAccessView(APIView):
             "created": created,
         }, status=201)
 
+    @extend_schema(
+        summary="Revoke Distributor-Provider Access Line",
+        description="Disables systemic relationship cross-lines between downstream insurance 'distributors' and core policy 'providers'. Logs out active synchronization lines.",
+        request={
+            "application/json": {
+                "type": "object",
+                "required": ["distributor_id", "provider_id"],
+                "properties": {
+                    "distributor_id": {"type": "string", "format": "uuid"},
+                    "provider_id": {"type": "string", "format": "uuid"}
+                }
+            }
+        },
+        responses={
+            200: {"type": "object", "properties": {"message": {"type": "string"}}},
+            404: {"description": "Access relationship record not found."}
+        },
+        tags=["Staff Administration Operations"]
+    )
     def delete(self, request):
-        """
-        Disabling of secure access lines 
-        between downstream insurance "distributors" and core policy "providers"
-        """
-
         from plans.models import DistributorProviderAccess
 
         distributor_id = request.data.get("distributor_id")
@@ -510,13 +723,36 @@ class StaffDistributorAccessView(APIView):
 class StaffServiceAccountCreateView(APIView):
     """
     Staff-only endpoint to provision a service account (e.g. for n8n).
-
-    The raw client_secret is returned ONLY in this response. It is never
-    stored in plaintext and cannot be retrieved again — if it's lost, the
-    credential must be revoked and a new one issued.
     """
     permission_classes = [IsSuperAdmin]
 
+    @extend_schema(
+        summary="Provision Machine-to-Machine Service Account",
+        description="Staff-only endpoint to provision system service accounts (e.g., n8n, runtime schedulers). The raw client_secret is returned ONLY once in this response and cannot be recovered if lost.",
+        request={
+            "application/json": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": {"type": "string", "example": "n8n automation workflows"}
+                }
+            }
+        },
+        responses={
+            201: {
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "string"},
+                    "client_secret": {"type": "string", "description": "Returned once only."},
+                    "name": {"type": "string"},
+                    "warning": {"type": "string"}
+                }
+            },
+            400: {"description": "Name field missing."},
+            409: {"description": "Service account with a matching generated routing identifier already exists."}
+        },
+        tags=["Staff Service Account Infrastructure Management"]
+    )
     def post(self, request):
         name = request.data.get("name", "").strip()
         if not name:
@@ -563,10 +799,30 @@ class StaffServiceAccountCreateView(APIView):
 class StaffServiceAccountListView(APIView):
     """
     Staff-only. Lists all service account credentials for audit purposes.
-    Never returns the secret — only client_id, name, status, and usage.
     """
     permission_classes = [IsSuperAdmin]
 
+    @extend_schema(
+        summary="Audit Service Account Credentials",
+        description="Staff-only view. Returns structural configuration fields, registration records, metadata states, and last usage statistics. Never surfaces the private hashed client secret details.",
+        responses={
+            200: {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "client_id": {"type": "string"},
+                        "name": {"type": "string"},
+                        "is_active": {"type": "boolean"},
+                        "created_at": {"type": "string", "format": "date-time"},
+                        "last_used_at": {"type": "string", "format": "date-time", "nullable": True},
+                        "email": {"type": "string"}
+                    }
+                }
+            }
+        },
+        tags=["Staff Service Account Infrastructure Management"]
+    )
     def get(self, request):
         creds = ServiceAccountCredential.objects.select_related("user").order_by("-created_at")
         data = [
@@ -585,12 +841,29 @@ class StaffServiceAccountListView(APIView):
 
 class StaffServiceAccountRevokeView(APIView):
     """
-    Staff-only. Deactivates a service account credential (does not delete it,
-    preserving audit history). The associated CustomUser is also disabled
-    so it can't authenticate by any path.
+    Staff-only. Deactivates a service account credential.
     """
     permission_classes = [IsSuperAdmin]
 
+    @extend_schema(
+        summary="Revoke Service Account Permissions",
+        description="Deactivates a service account credential structural link. Preserves audit history logs while rendering both credential structures and parent internal routing system users inactive.",
+        parameters=[
+            OpenApiParameter(
+                name="client_id",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.PATH,
+                required=True,
+                description="The target API client_id hash key string."
+            )
+        ],       
+        request=None,
+        responses={
+            200: {"type": "object", "properties": {"detail": {"type": "string"}}},
+            404: {"description": "Target identifier string matched no active record."}
+        },
+        tags=["Staff Service Account Infrastructure Management"]
+    )
     def post(self, request, client_id):
         try:
             cred = ServiceAccountCredential.objects.select_related("user").get(client_id=client_id)
@@ -609,22 +882,40 @@ class StaffServiceAccountRevokeView(APIView):
 class ServiceAccountTokenView(APIView):
     """
     POST /auth/service-account/token/
-
-    Client-credentials style token exchange for service accounts (n8n,
-    schedulers). No user JWT involved — caller authenticates with a
-    client_id/client_secret pair issued once, out-of-band, by staff.
-
-    Request body:
-        client_id (str)
-        client_secret (str)
-
-    Response:
-        200: { access, refresh, expires_in }
-        401: Invalid credentials
+    Client-credentials style token exchange for service accounts.
     """
     permission_classes = []
     authentication_classes = []
+    
+    SERVICE_ACCOUNT_TOKEN_LIFETIME = timedelta(days=10)
 
+    @extend_schema(
+        summary="Service Account M2M Token Exchange",
+        description="Client-credentials authentication style token mapping workspace. Handshakes inbound script applications using signed tokens back-dropped from initial custom-issued out-of-band credential mappings.",
+        request={
+            "application/json": {
+                "type": "object",
+                "required": ["client_id", "client_secret"],
+                "properties": {
+                    "client_id": {"type": "string"},
+                    "client_secret": {"type": "string"}
+                }
+            }
+        },
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "access": {"type": "string"},
+                    "refresh": {"type": "string"},
+                    "expires_in": {"type": "integer"}
+                }
+            },
+            400: {"description": "Missing client credentials parameters."},
+            401: {"description": "Invalid secret pairing credentials, or service node disabled."}
+        },
+        tags=["Authentication"]
+    )
     def post(self, request):
         client_id = request.data.get("client_id")
         client_secret = request.data.get("client_secret")
@@ -653,10 +944,15 @@ class ServiceAccountTokenView(APIView):
         refresh = RefreshToken.for_user(cred.user)
         refresh["role"] = cred.user.role
         refresh["service_account"] = True
+        refresh.set_exp(lifetime=self.SERVICE_ACCOUNT_TOKEN_LIFETIME)
+
         access = refresh.access_token
+        access["role"] = cred.user.role
+        access["service_account"] = True
+        access.set_exp(lifetime=self.SERVICE_ACCOUNT_TOKEN_LIFETIME)
 
         return Response({
             "access": str(access),
             "refresh": str(refresh),
-            "expires_in": int(access.lifetime.total_seconds()),
+            "expires_in": int(self.SERVICE_ACCOUNT_TOKEN_LIFETIME.total_seconds()),
         }, status=200)
