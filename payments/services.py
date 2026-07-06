@@ -77,12 +77,15 @@ def _get_service_webhook_url(event: str) -> str | None:
 # Check Nomba gateway eligibility
 def nomba_payment_available(sub) -> bool:
     """
+    Informational only — no longer used to gate whether Nomba can be used
+    as the payment gateway (see _build_nomba_split for the actual behavior
+    when a provider/distributor Nomba account is missing).
+
     True only if every party that needs a payout for this subscription
     (the provider, and the distributor if one is involved) has a Nomba
-    sub-account on file. Used to gate Nomba checkout/renewal up front —
-    before a Transaction row is created or Nomba is called — and can be
-    surfaced to the frontend so it can hide the Nomba option entirely for
-    partners who haven't set one up. Those partners use Interswitch instead.
+    sub-account on file. Kept around for the frontend to optionally show
+    "split payout will apply" vs. "full amount settles to platform"
+    messaging — it no longer blocks checkout or renewal.
     """
     if not sub.provider.nomba_account_id:
         return False
@@ -166,8 +169,8 @@ def verify_nomba_signature(payload: dict, timestamp: str, signature_header: str)
 def _store_nomba_token(txn: Transaction, token_key: str) -> NombaTokenStore | None:
     """
     Persist Nomba card tokenization details for recurring charges.
-    
-    Validates that the customer explicitly consented to recurring charges 
+
+    Validates that the customer explicitly consented to recurring charges
     via the associated PolicySubscription before saving to the database.
     """
     try:
@@ -214,9 +217,9 @@ def _store_nomba_token(txn: Transaction, token_key: str) -> NombaTokenStore | No
 # -----------------------------------------------------------------------------------
 
 
-# Paylout Automated Splits
+# Payout Automated Splits
 # -----------------------------------------------------------------------------------
-def _build_nomba_split(sub, total_amount: Decimal) -> dict:
+def _build_nomba_split(sub, total_amount: Decimal) -> dict | None:
     """
     Build a Nomba splitRequest so TheeInsurance's own sub-account only ever
     receives its platform fee — the provider (and distributor, if involved)
@@ -224,25 +227,30 @@ def _build_nomba_split(sub, total_amount: Decimal) -> dict:
 
     - Direct subscription (no distributor): 2-way split — platform, provider.
     - Distributor-originated subscription:   3-way split — platform, distributor, provider.
+
+    If the provider (or distributor, when one is involved) has no Nomba
+    sub-account on file, there is no valid payee to split to. Rather than
+    blocking the charge, we return None so the caller omits splitRequest
+    entirely — Nomba then settles the full amount into TheeInsurance's own
+    platform account (settings.NOMBA_SUB_ACCOUNT_ID). This is a deliberate
+    fallback rather than a fallback to the Interswitch gateway.
     """
-    platform_account = settings.NOMBA_SUB_ACCOUNT_ID
     provider_account = sub.provider.nomba_account_id
+    distributor_account = sub.distributor.nomba_account_id if sub.distributor else None
 
-    missing = []
-    if not provider_account:
-        missing.append(f"provider '{sub.provider.name}'")
+    has_provider = bool(provider_account)
+    has_distributor = (not sub.distributor) or bool(distributor_account)
 
-    distributor_account = ""
-    if sub.distributor:
-        distributor_account = sub.distributor.nomba_account_id
-        if not distributor_account:
-            missing.append(f"distributor '{sub.distributor.name}'")
-
-    if missing:
-        raise PaymentError(
-            f"Cannot process payment — missing Nomba account ID for: {', '.join(missing)}."
+    if not has_provider or not has_distributor:
+        logger.info(
+            "No complete Nomba split available for subscription %s "
+            "(provider_account_present=%s, distributor_account_present=%s) — "
+            "full amount will settle to the platform account, no split applied.",
+            sub.id, has_provider, has_distributor,
         )
+        return None
 
+    platform_account = settings.NOMBA_SUB_ACCOUNT_ID
     platform_cut = sub.platform_fee
     distributor_cut = sub.distributor_commission  # Decimal('0.00') when no distributor
     provider_cut = sub.provider_payout
@@ -308,10 +316,10 @@ def initiate_payment(transaction: Transaction) -> dict:
     Calls the Interswitch payment initiation endpoint and returns the
     payment URL that the frontend should redirect the user to.
     """
-    
+
     user = transaction.initiated_by
     customer_name = f"{user.first_name} {user.last_name}".strip()
-    
+
     payload = {
         "merchantCode": settings.INTERSWITCH_MERCHANT_CODE,
         "payableCode": settings.INTERSWITCH_PAYABLE_CODE,
@@ -362,6 +370,11 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
     want automated renewal charges. The partner passes consent explicitly;
     we refuse to tokenize without it.
 
+    Nomba is used regardless of whether the provider/distributor has a
+    Nomba sub-account on file — _build_nomba_split() below decides whether
+    to attach a splitRequest or let the full amount settle to TheeInsurance's
+    own platform account. There is no fallback to Interswitch here.
+
     Returns checkoutLink and orderReference for the partner to hand to
     their frontend.
     """
@@ -385,12 +398,6 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
     if not customer_consented:
         raise PaymentError(
             "Customer consent to automated charges is required to proceed."
-        )
-    
-    if not nomba_payment_available(sub):
-        raise PaymentError(
-            "Nomba is not available for this plan's provider or distributor. "
-            "Please use the Interswitch checkout instead."
         )
 
     # 3. Create an internal Transaction record before calling Nomba
@@ -422,8 +429,12 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
         },
         "tokenizeCard": True,
     }
-    
-    order_payload["order"]["splitRequest"] = _build_nomba_split(sub, sub.plan.premium)
+
+    split = _build_nomba_split(sub, sub.plan.premium)
+    if split is not None:
+        order_payload["order"]["splitRequest"] = split
+    # else: no splitRequest key at all — full amount stays with our
+    # platform sub-account (settings.NOMBA_SUB_ACCOUNT_ID).
 
     # 5. Call Nomba
     try:
@@ -485,7 +496,7 @@ def verify_transaction(reference: str) -> dict:
     Called after redirect (user lands on callback URL) and optionally
     after receiving a webhook, as a second source of truth.
     """
-    
+
     try:
         response = requests.get(
             settings.INTERSWITCH_BASE_URL + f"/api/v2/purchases/{reference}",
@@ -746,6 +757,11 @@ def charge_policy_renewal(subscription_id: str) -> dict:
       5. On success  → activate/renew subscription, fire n8n payment.successful
       6. On failure  → mark transaction FAILED, fire n8n charge.failed for dunning
 
+    Nomba is used regardless of whether the provider/distributor has a
+    Nomba sub-account on file — _build_nomba_split() decides whether to
+    attach a splitRequest or let the full amount settle to TheeInsurance's
+    own platform account. There is no fallback to Interswitch here.
+
     Returns a dict with outcome details for the caller (n8n or scheduler).
     """
     from subscriptions.models import PolicySubscription, NombaTokenStore
@@ -770,12 +786,6 @@ def charge_policy_renewal(subscription_id: str) -> dict:
         raise PaymentError(
             f"Auto-charge is disabled for subscription {subscription_id}. "
             "Skipping renewal charge."
-        )
-    
-    if not nomba_payment_available(sub):
-        raise PaymentError(
-            f"Nomba is no longer available for subscription {subscription_id}'s "
-            "provider or distributor — cannot process auto-renewal charge."
         )
 
     # 4. Load the stored token
@@ -836,8 +846,12 @@ def charge_policy_renewal(subscription_id: str) -> dict:
         },
         "tokenKey": token_store.token_key,
     }
-    
-    charge_payload["order"]["splitRequest"] = _build_nomba_split(sub, sub.plan.premium)
+
+    split = _build_nomba_split(sub, sub.plan.premium)
+    if split is not None:
+        charge_payload["order"]["splitRequest"] = split
+    # else: no splitRequest key at all — full amount stays with our
+    # platform sub-account (settings.NOMBA_SUB_ACCOUNT_ID).
 
     # 8. Call Nomba
     try:
@@ -1058,4 +1072,3 @@ def _fire_n8n_dunning_webhook(txn: Transaction, error: str = "") -> None:
     except requests.RequestException as e:
         logger.error("n8n dunning webhook failed for txn %s: %s", txn.reference, str(e))
 # -------------------------------------------------------------------------------------------
-
