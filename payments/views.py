@@ -30,6 +30,7 @@ from .services import (
     process_interswitch_webhook,
     process_nomba_webhook,
     verify_transaction,
+    verify_nomba_transaction,
     initiate_nomba_checkout,
     charge_policy_renewal,
 )
@@ -333,6 +334,106 @@ class NombaCheckoutView(APIView):
                 {"error": "An unexpected error occurred."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
+# views.py
+
+# views.py
+
+class NombaCallbackView(APIView):
+    """
+    GET /payments/nomba/callback/
+
+    Nomba redirects the customer here after a checkout attempt (success or
+    failure). No authentication — the customer arrives straight from
+    Nomba's hosted checkout page and won't be carrying a JWT.
+
+    Nomba appends `orderReference` as the query param (not `ref`, which is
+    Interswitch's convention), and that value maps to Transaction.gateway_reference,
+    not Transaction.reference — initiate_nomba_checkout() stores it there.
+
+    If the webhook hasn't landed yet (still PENDING), re-verifies directly
+    with Nomba as a second source of truth, same pattern as PaymentCallbackView.
+    """
+
+    permission_classes = []
+    authentication_classes = []
+    throttle_classes = [PartnerRateThrottle]
+
+    @extend_schema(
+        summary="Nomba Payment Callback",
+        description=(
+            "Handles the user redirect landing from Nomba after checkout. "
+            "Re-verifies with Nomba directly if still pending (webhook may not "
+            "have landed yet), updates the database, and returns the transaction state."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="orderReference",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Nomba order reference, appended by Nomba on redirect.",
+            )
+        ],
+        responses={
+            200: TransactionSerializer,
+            400: {"description": "Missing orderReference."},
+            404: {"description": "Transaction not found."},
+            502: {"description": "Gateway verification error."},
+        },
+        tags=["Payments"],
+    )
+    def get(self, request: Request) -> Response:
+        order_reference = request.query_params.get('orderReference')
+
+        if not order_reference:
+            return Response(
+                {"detail": "Missing orderReference."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            txn = Transaction.objects.get(gateway_reference=order_reference)
+        except Transaction.DoesNotExist:
+            return Response(
+                {"detail": "Transaction not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Only re-verify with gateway if still PENDING
+        # (webhook may have already updated it)
+        if txn.payment_status == Transaction.PAYMENT_STATUS.PENDING:
+            try:
+                gateway_data = verify_nomba_transaction(order_reference)
+                nomba_data = gateway_data.get("data", {})
+                gateway_status = nomba_data.get("status", "")
+
+                txn.gateway_response = gateway_data
+                txn.payment_status = (
+                    Transaction.PAYMENT_STATUS.SUCCESSFUL
+                    if gateway_status == "SUCCESS"
+                    else Transaction.PAYMENT_STATUS.FAILED
+                    if gateway_status == "FAILED"
+                    else Transaction.PAYMENT_STATUS.PENDING
+                )
+                txn.save(update_fields=[
+                    "payment_status",
+                    "gateway_response",
+                    "updated_at"
+                ])
+
+            except PaymentError as e:
+                logger.warning(
+                    "Could not verify Nomba txn %s on callback: %s", order_reference, str(e)
+                )
+                # Return current state even if verification fails —
+                # webhook will reconcile asynchronously
+
+        return Response(
+            TransactionSerializer(txn).data,
+            status=status.HTTP_200_OK
+        )
 
 
 class NombaWebhookView(APIView):

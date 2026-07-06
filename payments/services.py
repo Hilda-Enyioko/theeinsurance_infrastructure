@@ -423,6 +423,47 @@ def verify_transaction(reference: str) -> dict:
         raise PaymentError("Could not verify transaction with gateway.")
 
 
+
+def verify_nomba_transaction(order_reference: str) -> dict:
+    """
+    Query Nomba to verify the status of a checkout transaction by orderReference.
+
+    Called from NombaCallbackView when the customer lands on the redirect
+    before the webhook has landed, as a second source of truth — mirrors
+    verify_transaction() for Interswitch.
+
+    Note: Nomba's transaction verification endpoints are production-only;
+    this will not return meaningful data against sandbox credentials.
+    """
+    try:
+        token = get_nomba_token()
+        response = requests.get(
+            f"{settings.NOMBA_BASE_URL}/checkout/transaction",
+            params={
+                "idType": "ORDER_REFERENCE",
+                "id": order_reference,
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "accountId": settings.NOMBA_ACCOUNT_ID,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+    except NombaAuthError as e:
+        logger.error("Nomba auth failed during verification for order_ref %s: %s", order_reference, str(e))
+        raise PaymentError("Could not authenticate with payment gateway.")
+    except requests.Timeout:
+        logger.error("Nomba verification timed out for order_ref: %s", order_reference)
+        raise PaymentError("Verification timed out.")
+    except requests.RequestException as e:
+        logger.error("Nomba verification error for order_ref %s: %s", order_reference, str(e))
+        raise PaymentError("Could not verify transaction with gateway.")
+
+# --------------------------------------------------------------------------------------
+
+
 # Webhook Processing Functions
 # --------------------------------------------------------------------------------------
 def process_interswitch_webhook(payload: dict, raw_body: bytes, signature: str) -> CallbackLog:
