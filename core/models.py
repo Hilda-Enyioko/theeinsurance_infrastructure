@@ -17,6 +17,17 @@ class Partner(models.Model):
     partner_type = models.CharField(max_length=20, choices=PARTNER_TYPE_CHOICES)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    nomba_account_id = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        default=None,
+        unique=True,
+        help_text=(
+            "Nomba sub-account ID for payout settlement. Leave blank if this "
+            "partner doesn't have one — they'll default to Interswitch checkout."
+        ),
+    )
 
     def __str__(self):
         return self.name

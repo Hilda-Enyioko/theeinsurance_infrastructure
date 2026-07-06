@@ -91,6 +91,10 @@ class PartnerOnboardingSerializer(serializers.Serializer):
     partner_slug = serializers.CharField(max_length=100)
     partner_type = serializers.ChoiceField(choices=Partner.PARTNER_TYPE_CHOICES)
     commission_rate = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, default=0.00)
+    nomba_account_id = serializers.CharField(
+        max_length=100, required=False, allow_blank=True, allow_null=True, default=None,
+        help_text="Optional. Leave blank if this partner will use Interswitch instead of Nomba."
+    )
 
     # admin user details
     email = serializers.EmailField()
@@ -123,6 +127,7 @@ class PartnerOnboardingSerializer(serializers.Serializer):
     def create(self, validated_data):
         partner_type = validated_data.pop("partner_type")
         commission_rate = validated_data.pop("commission_rate", 0.00)
+        nomba_account_id = validated_data.pop("nomba_account_id", None)
         validated_data.pop("confirm_password")
 
         # create partner
@@ -130,6 +135,7 @@ class PartnerOnboardingSerializer(serializers.Serializer):
             name=validated_data.pop("partner_name"),
             slug=validated_data.pop("partner_slug"),
             partner_type=partner_type,
+            nomba_account_id=nomba_account_id,
             is_active=False, # inactive until KYC is approved
         )
 
