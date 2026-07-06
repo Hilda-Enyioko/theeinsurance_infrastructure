@@ -17,6 +17,8 @@ from django.conf import settings
 from django.db import transaction as db_transaction
 from django.utils import timezone
 from django.db.models import Q
+from drf_spectacular.utils import extend_schema_field
+from rest_framework import serializers
 
 from .models import CallbackLog, Transaction
 from core.nomba_auth import get_nomba_token, NombaAuthError    # noqa: E402
@@ -75,6 +77,7 @@ def _get_service_webhook_url(event: str) -> str | None:
     return endpoint.url if endpoint else None
 
 # Check Nomba gateway eligibility
+@extend_schema_field(serializers.BooleanField())
 def nomba_payment_available(sub) -> bool:
     """
     Informational only — no longer used to gate whether Nomba can be used

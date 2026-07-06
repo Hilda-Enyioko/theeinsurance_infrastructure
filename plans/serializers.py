@@ -1,6 +1,9 @@
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema_field
 from .models import InsuranceCategory, InsurancePlan, DistributorProviderAccess
 from core.models import Partner
+
+ACCESS_STATUS_CHOICES = ["not_requested", "pending", "approved", "rejected"]
 
 # Insurance Category Serializer
 class InsuranceCategorySerializer(serializers.ModelSerializer):
@@ -69,10 +72,9 @@ class DistributorProviderAccessSerializer(serializers.ModelSerializer):
         fields = [
             "id", "distributor", "distributor_name",
             "provider", "provider_name",
-            "is_active", "granted_at",
+            "status", "is_active", "granted_at", "reviewed_at",
         ]
-        read_only_fields = ["id", "distributor", "granted_at"]
-
+        read_only_fields = ["id", "distributor", "status", "granted_at", "reviewed_at"]
 
 class ProviderBrowseSerializer(serializers.ModelSerializer):
     """
@@ -85,6 +87,9 @@ class ProviderBrowseSerializer(serializers.ModelSerializer):
         model = Partner
         fields = ["id", "name", "slug", "access_status"]
 
+    @extend_schema_field(
+        serializers.ChoiceField(choices=ACCESS_STATUS_CHOICES)
+    )
     def get_access_status(self, obj):
         distributor = self.context["distributor"]
         access = DistributorProviderAccess.objects.filter(
@@ -106,6 +111,9 @@ class DistributorPlanBrowseSerializer(InsurancePlanSerializer):
     class Meta(InsurancePlanSerializer.Meta):
         fields = InsurancePlanSerializer.Meta.fields + ["access_status"]
 
+    @extend_schema_field(
+        serializers.ChoiceField(choices=ACCESS_STATUS_CHOICES)
+    )
     def get_access_status(self, obj):
         distributor = self.context["distributor"]
         access = DistributorProviderAccess.objects.filter(

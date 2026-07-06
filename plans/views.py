@@ -307,10 +307,25 @@ class DistributorProviderAccessView(APIView):
         tags=["Insurance Plans: Distributor Access"]
     )
     def get(self, request):
-        partner = get_partner_from_user(request.user)
-        access = DistributorProviderAccess.objects.filter(distributor=partner)
-        serializer = DistributorProviderAccessSerializer(access, many=True)
-        return Response({"providers": serializer.data})
+        distributor = request.user.partner_admin_profile.partner
+        status_filter = request.query_params.get("status", "approved")
+
+        valid_statuses = {"pending", "approved", "rejected"}
+        if status_filter not in valid_statuses and status_filter != "all":
+            return Response(
+                {"detail": f"Invalid status filter. Choose from: {', '.join(valid_statuses)}, or 'all'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        qs = DistributorProviderAccess.objects.filter(
+            distributor=distributor
+        ).select_related("distributor", "provider")
+
+        if status_filter != "all":
+            qs = qs.filter(status=status_filter)
+
+        serializer = DistributorProviderAccessSerializer(qs, many=True)
+        return Response(serializer.data)
 
 
 @extend_schema_view(
