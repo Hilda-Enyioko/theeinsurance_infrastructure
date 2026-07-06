@@ -72,3 +72,70 @@ class DistributorProviderAccessSerializer(serializers.ModelSerializer):
             "is_active", "granted_at",
         ]
         read_only_fields = ["id", "distributor", "granted_at"]
+
+
+class ProviderBrowseSerializer(serializers.ModelSerializer):
+    """
+    Read-only view of a provider, for the
+    distributor 'browse providers' list.
+    """
+    access_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Partner
+        fields = ["id", "name", "slug", "access_status"]
+
+    def get_access_status(self, obj):
+        distributor = self.context["distributor"]
+        access = DistributorProviderAccess.objects.filter(
+            distributor=distributor, provider=obj
+        ).first()
+        if not access:
+            return "not_requested"
+        return access.status
+
+
+class DistributorPlanBrowseSerializer(InsurancePlanSerializer):
+    """
+    Plans list for distributors, annotated with 
+    this distributor's access status to the plan's 
+    provider.
+    """
+    access_status = serializers.SerializerMethodField()
+
+    class Meta(InsurancePlanSerializer.Meta):
+        fields = InsurancePlanSerializer.Meta.fields + ["access_status"]
+
+    def get_access_status(self, obj):
+        distributor = self.context["distributor"]
+        access = DistributorProviderAccess.objects.filter(
+            distributor=distributor, provider=obj.provider
+        ).first()
+        return access.status if access else "not_requested"
+
+
+class DistributorAccessRequestSerializer(serializers.Serializer):
+    provider = serializers.PrimaryKeyRelatedField(
+        queryset=Partner.objects.filter(partner_type="provider", is_active=True)
+    )
+
+    def validate_provider(self, value):
+        distributor = self.context["distributor"]
+        existing = DistributorProviderAccess.objects.filter(
+            distributor=distributor, provider=value
+        ).first()
+        if existing and existing.status == "approved":
+            raise serializers.ValidationError("Access already approved for this provider.")
+        if existing and existing.status == "pending":
+            raise serializers.ValidationError("A request for this provider is already pending.")
+        return value
+
+    def create(self, validated_data):
+        distributor = self.context["distributor"]
+        provider = validated_data["provider"]
+        access, _ = DistributorProviderAccess.objects.update_or_create(
+            distributor=distributor,
+            provider=provider,
+            defaults={"status": "pending", "is_active": False},
+        )
+        return access

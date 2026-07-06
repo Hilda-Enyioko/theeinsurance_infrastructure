@@ -1,8 +1,16 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
+from rest_framework.generics import ListAPIView
+from rest_framework import serializers, status
 from django.db.models import Q
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
+from drf_spectacular.utils import (
+    extend_schema,
+    OpenApiParameter,
+    OpenApiResponse,
+    extend_schema_view,
+    inline_serializer,
+)
 from drf_spectacular.types import OpenApiTypes
 
 from .models import InsuranceCategory, InsurancePlan, DistributorProviderAccess
@@ -11,9 +19,17 @@ from .serializers import (
     InsurancePlanSerializer,
     InsurancePlanCreateSerializer,
     DistributorProviderAccessSerializer,
+    ProviderBrowseSerializer,
+    DistributorPlanBrowseSerializer,
+    DistributorAccessRequestSerializer,
 )
-from accounts.permissions import IsProviderAdmin, IsDistributorAdmin, IsServiceAccount
+from accounts.permissions import (
+    IsProviderAdmin,
+    IsDistributorAdmin,
+    IsServiceAccount,
+)
 from core.throttles import PartnerRateThrottle
+from core.models import Partner
 
 
 # Helpers
@@ -295,6 +311,127 @@ class DistributorProviderAccessView(APIView):
         access = DistributorProviderAccess.objects.filter(distributor=partner)
         serializer = DistributorProviderAccessSerializer(access, many=True)
         return Response({"providers": serializer.data})
+
+
+@extend_schema(
+    get=extend_schema(
+        summary="Browse all providers",
+        description="Fetch all active providers hosted on the platform along with the current distributor's access status to each.",
+        responses={200: ProviderBrowseSerializer(many=True)},
+    )
+)
+class DistributorProviderBrowseView(ListAPIView):
+    """
+    GET /partner/providers/browse/
+    All active providers hosted on the platform, with this distributor's
+    access status to each (not_requested / pending / approved / rejected).
+    """
+
+    permission_classes = [IsDistributorAdmin]
+    throttle_classes = [PartnerRateThrottle]
+    serializer_class = ProviderBrowseSerializer
+
+    def get_queryset(self):
+        return Partner.objects.filter(partner_type="provider", is_active=True).order_by("name")
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["distributor"] = self.request.user.partner_admin_profile.partner
+        return context
+
+
+@extend_schema_view(
+    get=extend_schema(
+        summary="Browse all insurance plans",
+        description="Fetch all active plans across all providers, annotated with access_status. Results can be filtered by category or provider.",
+        parameters=[
+            OpenApiParameter(
+                name="category",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Filter plans by Category UUID",
+                required=False,
+            ),
+            OpenApiParameter(
+                name="provider",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Filter plans by Provider UUID",
+                required=False,
+            ),
+        ],
+        responses={200: DistributorPlanBrowseSerializer(many=True)},
+    )
+)
+class DistributorPlanBrowseView(ListAPIView):
+    """
+    GET /partner/providers/plans/
+    All active plans across all providers, annotated with access_status.
+    Optional query params: ?category=<uuid>&provider=<uuid>
+    """
+
+    permission_classes = [IsDistributorAdmin]
+    throttle_classes = [PartnerRateThrottle]
+    serializer_class = DistributorPlanBrowseSerializer
+
+    def get_queryset(self):
+        qs = InsurancePlan.objects.filter(is_active=True).select_related("provider", "category")
+        category = self.request.query_params.get("category")
+        provider = self.request.query_params.get("provider")
+        if category:
+            qs = qs.filter(category_id=category)
+        if provider:
+            qs = qs.filter(provider_id=provider)
+        return qs
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["distributor"] = self.request.user.partner_admin_profile.partner
+        return context
+
+
+class DistributorAccessRequestView(APIView):
+    """
+    POST /partner/providers/request-access/
+    Body: {"provider": "<provider-uuid>"}
+    Creates a pending DistributorProviderAccess request.
+    """
+
+    permission_classes = [IsDistributorAdmin]
+    throttle_classes = [PartnerRateThrottle]
+
+    @extend_schema(
+        summary="Request access to a provider",
+        description="Creates a new pending access request for the distributor to access a specific provider's data/plans.",
+        request=DistributorAccessRequestSerializer,
+        responses={
+            201: inline_serializer(
+                name="DistributorAccessRequestResponse",
+                fields={
+                    "provider": serializers.CharField(help_text="Name of the provider"),
+                    "status": serializers.CharField(help_text="Current status of the request (e.g., pending)"),
+                    "granted_at": serializers.DateTimeField(
+                        help_text="Timestamp when access was granted, if applicable", allow_null=True
+                    ),
+                },
+            )
+        },
+    )
+    def post(self, request):
+        serializer = DistributorAccessRequestSerializer(
+            data=request.data,
+            context={"distributor": request.user.partner_admin_profile.partner},
+        )
+        serializer.is_valid(raise_exception=True)
+        access = serializer.save()
+        return Response(
+            {
+                "provider": access.provider.name,
+                "status": access.status,
+                "granted_at": access.granted_at,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 # AI / Automation — Internal Service Endpoints

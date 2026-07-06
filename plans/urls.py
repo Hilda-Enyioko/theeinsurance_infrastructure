@@ -6,8 +6,11 @@ from .views import (
     ProviderPlanListCreateView,
     ProviderPlanDetailView,
     DistributorProviderAccessView,
+    DistributorAccessRequestView,
+    DistributorProviderBrowseView,
+    DistributorPlanBrowseView,
     PlanRecommendationView,
-    PlanContextView
+    PlanContextView,
 )
 
 urlpatterns = [
@@ -24,4 +27,7 @@ urlpatterns = [
 
     # distributor
     path("partner/providers/", DistributorProviderAccessView.as_view(), name="distributor-provider-access"),
+    path("partner/providers/browse/", DistributorProviderBrowseView.as_view(), name="distributor-provider-browse"),
+    path("partner/providers/plans/", DistributorPlanBrowseView.as_view(), name="distributor-plan-browse"),
+    path("partner/providers/request-access/", DistributorAccessRequestView.as_view(), name="distributor-access-request"),
 ]
