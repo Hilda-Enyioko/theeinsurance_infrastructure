@@ -853,7 +853,7 @@ def charge_policy_renewal(subscription_id: str) -> dict:
     charge_payload = {
         "order": {
             "orderReference": txn.reference,
-            "customerEmail":  sub.customer.email,
+            "customerEmail":  sub.customer.user.email,
             "amount":         str(sub.plan.premium),
             "currency":       "NGN",
             "accountId":      settings.NOMBA_SUB_ACCOUNT_ID,
@@ -1076,7 +1076,7 @@ def _fire_n8n_dunning_webhook(txn: Transaction, error: str = "") -> None:
         "event":           "charge.failed",
         "transaction_ref": txn.reference,
         "subscription_id": str(sub.id),
-        "customer_email":  sub.customer.email if sub.customer else None,
+        "customer_email":  sub.customer.user.email if sub.customer else None,
         "amount":          str(txn.amount),
         "currency":        txn.currency,
         "failure_reason":  error or "unknown",
