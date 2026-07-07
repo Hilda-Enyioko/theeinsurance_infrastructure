@@ -199,3 +199,18 @@ class PartnerMeSerializer(serializers.Serializer):
     partner_type = serializers.CharField(source='partner_admin_profile.partner.partner_type')
     partner_name = serializers.CharField(source='partner_admin_profile.partner.name')
     is_active = serializers.BooleanField(source='partner_admin_profile.partner.is_active')
+
+
+class PartnerPasswordConfirmSerializer(serializers.Serializer):
+    """
+    Shared by both key-retrieval and key-regeneration — requires the
+    authenticated partner admin to re-enter their password before either
+    viewing or rotating the sensitive api_key.
+    """
+    password = serializers.CharField(write_only=True, required=True)
+
+    def validate_password(self, value):
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Incorrect password.")
+        return value

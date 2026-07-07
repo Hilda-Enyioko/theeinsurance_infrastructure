@@ -3,6 +3,8 @@ from .views import (
     PartnerOnboardingView,
     PartnerKYCView,
     PartnerMeView,
+    PartnerAPIKeyRetrieveView,
+    PartnerAPIKeyRegenerateView,
     CustomerRegisterView,
     CustomerKYCView,
     LoginView,
@@ -21,6 +23,8 @@ urlpatterns = [
     path("partner/onboard/", PartnerOnboardingView.as_view(), name="partner-onboard"),
     path("partner/kyc/", PartnerKYCView.as_view(), name="partner-kyc"),
     path('partner/me/', PartnerMeView.as_view(), name='partner-me'),
+    path("partner/api-key/retrieve/", PartnerAPIKeyRetrieveView.as_view(), name="partner-api-key-retrieve"),
+    path("partner/api-key/regenerate/", PartnerAPIKeyRegenerateView.as_view(), name="partner-api-key-regenerate"),
 
     # customer
     path("auth/register/", CustomerRegisterView.as_view(), name="customer-register"),

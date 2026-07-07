@@ -39,6 +39,7 @@ from .serializers import (
     CustomerKYCSerializer,
     PartnerKYCSerializer,
     PartnerMeSerializer,
+    PartnerPasswordConfirmSerializer,
 )
 
 
@@ -385,6 +386,119 @@ class PartnerMeView(APIView):
 
         serializer = PartnerMeSerializer(user)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class PartnerAPIKeyRetrieveView(APIView):
+    """
+    POST /partner/api-key/retrieve/
+    Confirms the caller's password, then returns the partner's CURRENT
+    api_key unchanged. Safe to call repeatedly — does not rotate the key,
+    so other logged-in admins and the partner's end-user portal are
+    unaffected. Use this for "log in on a new device" / "reconfigure my
+    integration" scenarios.
+    """
+    permission_classes = [IsPartnerAdmin]
+    throttle_classes = [PartnerRateThrottle]
+
+    @extend_schema(
+        summary="Retrieve Current Partner API Key",
+        description=(
+            "Returns the partner's existing api_key (X-Partner-Key) after confirming "
+            "the caller's password. Does NOT rotate the key — safe to call from "
+            "multiple admin sessions without affecting other integrations already "
+            "using the key."
+        ),
+        request=PartnerPasswordConfirmSerializer,
+        responses={
+            200: {
+                "type": "object",
+                "properties": {"api_key": {"type": "string"}},
+            },
+            400: {"description": "Missing or incorrect password."},
+            403: {"description": "The authenticated user is not a partner admin or lacks a linked partner."},
+        },
+        tags=["Partner Management"],
+    )
+    def post(self, request):
+        partner = get_partner_from_user(request.user)
+        if partner is None:
+            return Response(
+                {"detail": "This account is not linked to a partner."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = PartnerPasswordConfirmSerializer(
+            data=request.data, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+
+        return Response({"api_key": partner.api_key}, status=status.HTTP_200_OK)
+
+
+class PartnerAPIKeyRegenerateView(APIView):
+    """
+    POST /partner/api-key/regenerate/
+    Confirms the caller's password, then ROTATES the partner's api_key.
+    The previous key is invalidated immediately — any other admin session,
+    end-user portal, or integration still using the old key will start
+    getting 401s from PartnerScopeMiddleware on their next request. This
+    is a deliberate, disruptive action — only use when the key is
+    suspected compromised, not for routine retrieval.
+    """
+    permission_classes = [IsPartnerAdmin]
+    throttle_classes = [PartnerRateThrottle]
+
+    @extend_schema(
+        summary="Regenerate Partner API Key",
+        description=(
+            "Rotates the authenticated partner's api_key (X-Partner-Key) after "
+            "confirming the caller's password. The previous key stops working "
+            "immediately — every other admin session, end-user portal, or "
+            "integration currently using the old key will be locked out until "
+            "reconfigured with the new one. Use only when the key is compromised "
+            "or as a deliberate security rotation, not for routine retrieval."
+        ),
+        request=PartnerPasswordConfirmSerializer,
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "api_key": {"type": "string", "description": "New key. Shown once only."},
+                    "warning": {"type": "string"},
+                }
+            },
+            400: {"description": "Missing or incorrect password."},
+            403: {"description": "The authenticated user is not a partner admin or lacks a linked partner."},
+        },
+        tags=["Partner Management"],
+    )
+    def post(self, request):
+        partner = get_partner_from_user(request.user)
+        if partner is None:
+            return Response(
+                {"detail": "This account is not linked to a partner."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = PartnerPasswordConfirmSerializer(
+            data=request.data, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+
+        partner.api_key = secrets.token_urlsafe(32)
+        partner.save(update_fields=["api_key"])
+
+        return Response(
+            {
+                "api_key": partner.api_key,
+                "warning": (
+                    "This key will not be shown again. The previous key is now invalid — "
+                    "update any other integrations (end-user portal, other admin sessions) "
+                    "with this new key."
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 # Token Refresh

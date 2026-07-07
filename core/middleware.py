@@ -14,6 +14,8 @@ EXEMPT_VIEW_NAMES = [
     "token-refresh",
     "payments:callback",
     "payments:nomba-callback",
+    "partner-api-key-regenerate",
+    "partner-api-key-retrieve",
 ]
 
 
