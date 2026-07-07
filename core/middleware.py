@@ -9,8 +9,8 @@ from .models import Partner
 EXEMPT_VIEW_NAMES = [
     "partner-onboard",
     "partner-kyc",
-    "partner-me"
-    "auth-login",
+    "partner-me",
+    "login",
     "token-refresh",
     "payments:callback",
     "payments:nomba-callback",
