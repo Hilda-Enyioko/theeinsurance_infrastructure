@@ -827,18 +827,19 @@ class StaffDistributorAccessView(APIView):
         access, created = DistributorProviderAccess.objects.get_or_create(
             distributor=distributor,
             provider=provider,
-            defaults={"is_active": True},
+            defaults={"status": "approved", "is_active": True},
         )
 
         if not created:
+            access.status = "approved"
             access.is_active = True
-            access.save()
+            access.save(update_fields=["status", "is_active"])
 
         return Response({
             "message": f"Access granted: {distributor.name} → {provider.name}",
             "created": created,
         }, status=201)
-
+    
     @extend_schema(
         summary="Revoke Distributor-Provider Access Line",
         description="Disables systemic relationship cross-lines between downstream insurance 'distributors' and core policy 'providers'. Logs out active synchronization lines.",
@@ -870,7 +871,8 @@ class StaffDistributorAccessView(APIView):
                 provider__id=provider_id,
             )
             access.is_active = False
-            access.save()
+            access.status = "rejected"
+            access.save(update_fields=["is_active", "status"])
             return Response({"message": "Access revoked."})
         except DistributorProviderAccess.DoesNotExist:
             return Response({"error": "Access record not found."}, status=404)
