@@ -9,6 +9,7 @@ from .models import Partner
 EXEMPT_VIEW_NAMES = [
     "partner-onboard",
     "partner-kyc",
+    "partner-me"
     "login",
     "token-refresh",
     "payments:callback",
