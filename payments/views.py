@@ -421,7 +421,12 @@ class NombaCallbackView(APIView):
         # (webhook may have already updated it)
         if txn.payment_status == Transaction.PAYMENT_STATUS.PENDING:
             try:
-                gateway_data = verify_nomba_transaction(txn.gateway_reference)
+                # verify_nomba_transaction expects OUR merchant orderReference
+                # (what we sent Nomba as "orderReference" at checkout time),
+                # not Nomba's own orderId — using gateway_reference here was
+                # sending Nomba's ID into a param it doesn't recognize, hence
+                # the 404.
+                gateway_data = verify_nomba_transaction(txn.reference)
                 nomba_data = gateway_data.get("data", {})
                 gateway_status = nomba_data.get("status", "")
 
@@ -443,9 +448,6 @@ class NombaCallbackView(APIView):
                 logger.warning(
                     "Could not verify Nomba txn %s on callback: %s", txn.reference, str(e)
                 )
-                # Return current state even if verification fails —
-                # webhook will reconcile asynchronously
-
         return Response(
             TransactionSerializer(txn).data,
             status=status.HTTP_200_OK
