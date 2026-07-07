@@ -181,6 +181,12 @@ def _store_nomba_token(txn: Transaction, token_key: str) -> NombaTokenStore | No
     except AttributeError:
         logger.error("Transaction %s is not linked to a subscription.", txn.reference)
         return None
+    
+    logger.info(
+        "Subscription %s auto_charge_enabled=%s",
+        sub.id,
+        sub.auto_charge_enabled
+    )
 
     # Consent check
     if not sub.auto_charge_enabled:
@@ -405,6 +411,13 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
     
     sub.auto_charge_enabled = True
     sub.save(update_fields=["auto_charge_enabled", "updated_at"])
+    
+    sub.refresh_from_db()
+    
+    logger.warning(
+        "Saved auto_charge_enabled=%s",
+        sub.auto_charge_enabled
+    )
 
     # 3. Create an internal Transaction record before calling Nomba
     with db_transaction.atomic():
