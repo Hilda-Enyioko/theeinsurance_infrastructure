@@ -402,6 +402,9 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
         raise PaymentError(
             "Customer consent to automated charges is required to proceed."
         )
+    
+    sub.auto_charge_enabled = True
+    sub.save(update_fields=["auto_charge_enabled", "updated_at"])
 
     # 3. Create an internal Transaction record before calling Nomba
     with db_transaction.atomic():
