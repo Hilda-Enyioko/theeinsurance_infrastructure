@@ -10,7 +10,7 @@ EXEMPT_VIEW_NAMES = [
     "partner-onboard",
     "partner-kyc",
     "partner-me"
-    "login",
+    "auth-login",
     "token-refresh",
     "payments:callback",
     "payments:nomba-callback",
