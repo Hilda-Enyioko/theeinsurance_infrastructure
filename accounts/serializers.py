@@ -198,3 +198,4 @@ class PartnerKYCSerializer(serializers.ModelSerializer):
 class PartnerMeSerializer(serializers.Serializer):
     partner_type = serializers.CharField(source='partner_admin_profile.partner.partner_type')
     partner_name = serializers.CharField(source='partner_admin_profile.partner.name')
+    is_active = serializers.BooleanField(source='partner_admin_profile.partner.is_active')
