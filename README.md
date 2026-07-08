@@ -102,9 +102,14 @@ Schema is generated with `drf-spectacular`. Once running locally or on staging, 
 
 ## Project Status
 
-Active hackathon build for DevCareer x Nomba. Core partner infrastructure, payments (Nomba), and subscription lifecycle are built; dunning automation and full n8n handoff are in progress ahead of the July 4 submission deadline.
+Active hackathon build for DevCareer x Nomba. Core partner infrastructure, payments (Nomba), and subscription lifecycle are built; dunning automation, automated payout split, and full n8n handoff complete.
 
 ## Team — Meridian
 
 - **Hilda Enyioko** — Full-stack development (backend architecture, payments integration, API design)
 - **Chinedu Adindu** — AI/Automation engineering (n8n workflows: notifications, dunning, plan recommendation, provider analytics)
+
+
+
+PLEASE READ FILE FOR FULL WALKTHROUGH ON SIGNUP AND APPLICATION USE:
+https://docs.google.com/document/d/1Copu9wlzUoL5IMtOeG-bQ1v8rJGlQbNtgvMdDALjZXI/edit?usp=drivesdk
