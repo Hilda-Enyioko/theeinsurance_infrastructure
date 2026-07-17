@@ -24,6 +24,16 @@ class IsPartnerAdmin(BasePermission):
         )
 
 
+class IsPartnerAdminOfOwnOrg(BasePermission):
+    def has_permission(self, request, view):
+        profile = getattr(request.user, "partner_admin_profile", None)
+        return bool(profile and profile.role == "partner_admin")
+
+    def has_object_permission(self, request, view, obj):
+        # obj is the PartnerAdmin being created/modified — must be same org
+        return obj.partner_id == request.user.partner_admin_profile.partner_id
+
+
 class IsCustomer(BasePermission):
     """
     End users (customers) only.
