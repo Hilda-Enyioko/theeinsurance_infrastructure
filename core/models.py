@@ -24,8 +24,7 @@ class Partner(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
     slug = models.SlugField(unique=True)
-    
-    # Store the secure hash rather than the plaintext key
+
     api_key_hash = models.CharField(max_length=64, unique=True, editable=False)
     
     partner_type = models.CharField(max_length=20, choices=PARTNER_TYPE_CHOICES)
