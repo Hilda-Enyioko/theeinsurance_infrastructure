@@ -110,11 +110,7 @@ class InsurancePlan(models.Model):
         return f"{self.name} - {self.provider.name}"
 
 
-# ---Distributor Access Grant---
-# Replaces DistributorProviderAccess. Handles both provider-level and
-# plan-level access under one approval workflow (BR-001, BR-002, BR-003,
-# BR-020), instead of two parallel models with duplicated approve/reject
-# logic.
+# Distributor Access Grant
 
 class DistributorAccessGrantManager(models.Manager):
     def request_access(self, *, distributor: Partner, provider: Partner, scope: str, plan: "InsurancePlan | None" = None):
@@ -177,6 +173,24 @@ class DistributorAccessGrantManager(models.Manager):
         grant.reviewed_at = timezone.now()
         grant.save(update_fields=["status", "reviewed_by", "reviewed_at"])
         return grant
+    
+    def withdraw(self, grant: "DistributorAccessGrant"):
+        """
+        Distributor-initiated — not a staff action, unlike approve/reject/
+        revoke. Only a still-pending request can be withdrawn; anything
+        already decided (approved/rejected) must go through staff revocation
+        instead, preserving that decision's audit trail. The row is kept so 
+        the review history, and request_access() will happily reuse this row 
+        and flip it back to 'pending' if the distributor requests the same 
+        access again later.
+        """
+        if grant.status != "pending":
+            raise ValidationError(
+                f"Only a pending request can be withdrawn (current status: {grant.status})."
+            )
+        grant.status = "withdrawn"
+        grant.save(update_fields=["status"])
+        return grant
 
 
 class DistributorAccessGrant(models.Model):
@@ -188,7 +202,8 @@ class DistributorAccessGrant(models.Model):
         ("pending", "Pending"),
         ("approved", "Approved"),
         ("rejected", "Rejected"),
-        ("revoked", "Revoked"),
+        ("revoked", "Revoked"),      
+        ("withdrawn", "Withdrawn"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

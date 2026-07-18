@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt import tokens as jwt_tokens
 from rest_framework_simplejwt.exceptions import TokenError
+from .utils import get_partner_from_user, is_full_partner_admin
 
 from accounts.permissions import (
     IsCustomer,
@@ -50,12 +51,6 @@ from .serializers import (
 
 
 # Helper functions
-def get_partner_from_user(user):
-    """Retrieve the partner instance associated with a user admin profile."""
-    if hasattr(user, "partner_admin_profile"):
-        return user.partner_admin_profile.partner
-    return None
-
 
 def generate_tokens(user, partner_id=None):
     """Generate simple JWT access and refresh tokens for an authenticated user."""
@@ -114,7 +109,7 @@ class PartnerKYCView(APIView):
         partner = get_partner_from_user(request.user)
         profile = getattr(request.user, "partner_admin_profile", None)
 
-        if profile is None or profile.role != "partner_admin":
+        if profile is None or not is_full_partner_admin(request.user):
             return Response(
                 {
                     "error": (
@@ -229,7 +224,7 @@ class PartnerTeamMemberDeactivateView(APIView):
     def post(self, request, member_id):
         """Deactivate a specified team account while maintaining org structural safety."""
         profile = getattr(request.user, "partner_admin_profile", None)
-        if profile is None or profile.role != "partner_admin":
+        if profile is None or not is_full_partner_admin(request.user):
             return Response(
                 {"error": "Only a partner_admin can deactivate team members."},
                 status=status.HTTP_403_FORBIDDEN,

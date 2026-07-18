@@ -1,32 +1,42 @@
+from django.core.exceptions import ValidationError
+from django.db.models import Q
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
-from django.db.models import Q
+from accounts.utils import get_partner_from_user, is_full_partner_admin
 
-from .models import InsuranceCategory, InsurancePlan, DistributorProviderAccess
+from .models import InsuranceCategory, InsurancePlan, DistributorAccessGrant
 from .serializers import (
     InsuranceCategorySerializer,
     InsurancePlanSerializer,
     InsurancePlanCreateSerializer,
-    DistributorProviderAccessSerializer,
+    DistributorAccessGrantSerializer,
+    DistributorAccessRequestSerializer,
 )
 from accounts.permissions import IsProviderAdmin, IsDistributorAdmin, IsServiceAccount
+from core.models import Partner
 from core.throttles import PartnerRateThrottle
 
 
 # Helpers
-def get_partner_from_user(user):
-    if hasattr(user, 'partner_admin_profile'):
-        return user.partner_admin_profile.partner
-    return None
+
+def _accessible_plan_ids_and_providers(distributor):
+    """
+    A distributor can see a plan if either (a) it
+    has an approved plan-level grant, or (b) it has an approved
+    provider-level grant for that plan's provider AND the plan isn't
+    Private. Returns the provider-id and plan-id sets used to build the
+    queryset filter — computed once per request rather than calling
+    InsurancePlan.is_accessible_to() per row (which would be N+1).
+    """
+    approved = DistributorAccessGrant.objects.filter(distributor=distributor, status="approved")
+    provider_ids = approved.filter(scope="provider").values_list("provider_id", flat=True)
+    plan_ids = approved.filter(scope="plan").values_list("plan_id", flat=True)
+    return list(provider_ids), list(plan_ids)
 
 
 # Categories
 class InsuranceCategoryListView(APIView):
-    """
-    Public. Returns all active insurance categories.
-    Protected at middleware level via X-Partner-Key.
-    """
     permission_classes = [AllowAny]
     throttle_classes = [PartnerRateThrottle]
 
@@ -36,13 +46,13 @@ class InsuranceCategoryListView(APIView):
         return Response({"categories": serializer.data})
 
 
-# Plans — Customer / Public Facing
+# Plans — Customer / Distributor Facing
 class InsurancePlanListView(APIView):
     """
-    Public endpoint — customers browse available plans.
-    Scoped to the requesting partner via X-Partner-Key middleware:
-    - Provider partner: shows their own active plans only.
-    - Distributor partner: shows plans from providers they have access to.
+    Public endpoint, scoped via X-Partner-Key middleware:
+    - Provider partner: their own active plans only.
+    - Distributor partner: plans they hold an approved grant for
+      (provider-level or plan-level), excluding anything Private.
     """
     permission_classes = [AllowAny]
     throttle_classes = [PartnerRateThrottle]
@@ -53,11 +63,11 @@ class InsurancePlanListView(APIView):
         if partner.partner_type == "provider":
             plans = InsurancePlan.objects.filter(provider=partner, is_active=True)
         else:
-            accessible_providers = DistributorProviderAccess.objects.filter(
-                distributor=partner, is_active=True
-            ).values_list("provider_id", flat=True)
-            plans = InsurancePlan.objects.filter(
-                provider__in=accessible_providers, is_active=True
+            provider_ids, plan_ids = _accessible_plan_ids_and_providers(partner)
+            plans = InsurancePlan.objects.filter(is_active=True).exclude(
+                visibility="private"
+            ).filter(
+                Q(provider_id__in=provider_ids) | Q(id__in=plan_ids)
             )
 
         category = request.query_params.get("category")
@@ -89,10 +99,6 @@ class InsurancePlanListView(APIView):
 
 
 class InsurancePlanDetailView(APIView):
-    """
-    Public endpoint — single plan detail.
-    Distributor access check is enforced at queryset level.
-    """
     permission_classes = [AllowAny]
     throttle_classes = [PartnerRateThrottle]
 
@@ -100,29 +106,22 @@ class InsurancePlanDetailView(APIView):
         partner = request.partner
 
         try:
-            plan = InsurancePlan.objects.get(id=plan_id, is_active=True)
+            plan = InsurancePlan.objects.select_related("provider").get(id=plan_id, is_active=True)
         except InsurancePlan.DoesNotExist:
             return Response({"error": "Plan not found."}, status=404)
 
-        if partner.partner_type == "distributor":
-            has_access = DistributorProviderAccess.objects.filter(
-                distributor=partner,
-                provider=plan.provider,
-                is_active=True,
-            ).exists()
-            if not has_access:
-                return Response({"error": "Plan not found."}, status=404)
+        if partner.partner_type == "distributor" and not plan.is_accessible_to(partner):
+            return Response({"error": "Plan not found."}, status=404)
 
         serializer = InsurancePlanSerializer(plan)
         return Response(serializer.data)
 
 
-# Plans — Provider Admin
+# Plans — Provider Team
 class ProviderPlanListCreateView(APIView):
     """
-    Provider admins manage their own plans.
-    IsProviderAdmin enforces: authenticated + partner_admin + provider type.
-    No inline role checks needed.
+    Any provider team member (partner_admin / support_partner_admin /
+    partner_viewer) can list plans. Only partner_admin can create one.
     """
     permission_classes = [IsProviderAdmin]
     throttle_classes = [PartnerRateThrottle]
@@ -141,6 +140,9 @@ class ProviderPlanListCreateView(APIView):
         return Response({"plans": serializer.data})
 
     def post(self, request):
+        if not is_full_partner_admin(request.user):
+            return Response({"error": "Only a partner_admin can create plans."}, status=403)
+
         partner = get_partner_from_user(request.user)
         serializer = InsurancePlanCreateSerializer(
             data=request.data,
@@ -153,11 +155,6 @@ class ProviderPlanListCreateView(APIView):
 
 
 class ProviderPlanDetailView(APIView):
-    """
-    Provider admins retrieve, update, or soft-delete their own plans.
-    IsProviderAdmin enforces role at the class level.
-    Object ownership is enforced via provider=partner filter in get_object().
-    """
     permission_classes = [IsProviderAdmin]
     throttle_classes = [PartnerRateThrottle]
 
@@ -175,6 +172,9 @@ class ProviderPlanDetailView(APIView):
         return Response(InsurancePlanSerializer(plan).data)
 
     def patch(self, request, plan_id):
+        if not is_full_partner_admin(request.user):
+            return Response({"error": "Only a partner_admin can edit plans."}, status=403)
+
         partner = get_partner_from_user(request.user)
         plan = self.get_object(plan_id, partner)
         if not plan:
@@ -190,40 +190,133 @@ class ProviderPlanDetailView(APIView):
         return Response(serializer.errors, status=400)
 
     def delete(self, request, plan_id):
+        if not is_full_partner_admin(request.user):
+            return Response({"error": "Only a partner_admin can deactivate plans."}, status=403)
+
         partner = get_partner_from_user(request.user)
         plan = self.get_object(plan_id, partner)
         if not plan:
             return Response({"error": "Plan not found."}, status=404)
 
-        # Soft delete — deactivate rather than destroy data.
         plan.is_active = False
         plan.save()
         return Response({"message": "Plan deactivated successfully."})
 
 
-# Distributor — Provider Access
-class DistributorProviderAccessView(APIView):
+# Provider — Access Requests Inbox
+class ProviderAccessRequestListView(APIView):
     """
-    Distributors view the list of providers they have been granted access to.
-    IsDistributorAdmin enforces: authenticated + partner_admin + distributor type.
+    Providers view distributor access requests targeting them. Approval
+    itself still happens via accounts.StaffDistributorAccessView (staff
+    review is required) — this view is read-only visibility so a provider
+    can see who has requested access before staff acts on it, and see the 
+    outcome afterward.
+    """
+    permission_classes = [IsProviderAdmin]
+    throttle_classes = [PartnerRateThrottle]
+
+    def get(self, request):
+        partner = get_partner_from_user(request.user)
+        grants = DistributorAccessGrant.objects.filter(
+            provider=partner
+        ).select_related("distributor", "plan").order_by("-requested_at")
+
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            grants = grants.filter(status=status_filter)
+
+        serializer = DistributorAccessGrantSerializer(grants, many=True)
+        return Response({"access_requests": serializer.data})
+
+
+# Distributor — Browse, Request, Track, Withdraw Access
+class DistributorAccessGrantView(APIView):
+    """
+    Distributors request provider-level or plan-level access, list their
+    own requests (any status), and withdraw a still-pending request.
+    Approval/rejection remain staff-only actions elsewhere.
     """
     permission_classes = [IsDistributorAdmin]
     throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
         partner = get_partner_from_user(request.user)
-        access = DistributorProviderAccess.objects.filter(distributor=partner)
-        serializer = DistributorProviderAccessSerializer(access, many=True)
-        return Response({"providers": serializer.data})
+        grants = DistributorAccessGrant.objects.filter(
+            distributor=partner
+        ).select_related("provider", "plan").order_by("-requested_at")
+
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            grants = grants.filter(status=status_filter)
+
+        serializer = DistributorAccessGrantSerializer(grants, many=True)
+        return Response({"access_grants": serializer.data})
+
+    def post(self, request):
+        if not is_full_partner_admin(request.user):
+            return Response({"error": "Only a partner_admin can request provider access."}, status=403)
+
+        partner = get_partner_from_user(request.user)
+        serializer = DistributorAccessRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        data = serializer.validated_data
+        try:
+            provider = Partner.objects.get(id=data["provider_id"], partner_type="provider")
+        except Partner.DoesNotExist:
+            return Response({"error": "Provider not found."}, status=404)
+
+        plan = None
+        if data["scope"] == "plan":
+            try:
+                plan = InsurancePlan.objects.get(id=data["plan_id"], provider=provider)
+            except InsurancePlan.DoesNotExist:
+                return Response({"error": "Plan not found for this provider."}, status=404)
+
+        try:
+            grant = DistributorAccessGrant.objects.request_access(
+                distributor=partner, provider=provider, scope=data["scope"], plan=plan
+            )
+        except ValidationError as e:
+            return Response({"error": str(e)}, status=400)
+
+        return Response(DistributorAccessGrantSerializer(grant).data, status=201)
+
+
+class DistributorAccessGrantWithdrawView(APIView):
+    """
+    Withdraws a still-pending request. Approved/rejected/revoked grants
+    can't be withdrawn this way — an approved grant must go through staff
+    revocation instead, preserving the audit trail. Ownership is enforced
+    via the distributor=partner filter in the lookup itself, so a
+    distributor can only ever withdraw its own organization's requests.
+    """
+    permission_classes = [IsDistributorAdmin]
+    throttle_classes = [PartnerRateThrottle]
+
+    def post(self, request, grant_id):
+        if not is_full_partner_admin(request.user):
+            return Response(
+                {"error": "Only a partner_admin can withdraw a request."}, status=403
+            )
+
+        partner = get_partner_from_user(request.user)
+        try:
+            grant = DistributorAccessGrant.objects.get(id=grant_id, distributor=partner)
+        except DistributorAccessGrant.DoesNotExist:
+            return Response({"error": "Access request not found."}, status=404)
+
+        try:
+            DistributorAccessGrant.objects.withdraw(grant, by=request.user)
+        except ValidationError as e:
+            return Response({"error": str(e)}, status=400)
+
+        return Response({"message": "Access request withdrawn."})
 
 
 # AI / Automation — Internal Service Endpoints
 class PlanRecommendationView(APIView):
-    """
-    AI Plan Recommendation Engine.
-    Called by n8n — requires a valid JWT from a dedicated service account.
-    Returns filtered and ranked plans based on query params for AI to reason over.
-    """
     permission_classes = [IsServiceAccount]
     throttle_classes = [PartnerRateThrottle]
 
@@ -236,11 +329,11 @@ class PlanRecommendationView(APIView):
         if partner.partner_type == "provider":
             plans = InsurancePlan.objects.filter(provider=partner, is_active=True)
         else:
-            accessible_providers = DistributorProviderAccess.objects.filter(
-                distributor=partner, is_active=True
-            ).values_list("provider_id", flat=True)
-            plans = InsurancePlan.objects.filter(
-                provider__in=accessible_providers, is_active=True
+            provider_ids, plan_ids = _accessible_plan_ids_and_providers(partner)
+            plans = InsurancePlan.objects.filter(is_active=True).exclude(
+                visibility="private"
+            ).filter(
+                Q(provider_id__in=provider_ids) | Q(id__in=plan_ids)
             )
 
         if category:
@@ -264,11 +357,6 @@ class PlanRecommendationView(APIView):
 
 
 class PlanContextView(APIView):
-    """
-    Conversational Insurance Assistant context feed.
-    Called by n8n — requires a valid JWT from a dedicated service account.
-    Provides structured plan data injected into Claude system prompt.
-    """
     permission_classes = [IsServiceAccount]
     throttle_classes = [PartnerRateThrottle]
 
@@ -278,15 +366,15 @@ class PlanContextView(APIView):
         if partner.partner_type == "provider":
             plans = InsurancePlan.objects.filter(provider=partner, is_active=True)
         else:
-            accessible_providers = DistributorProviderAccess.objects.filter(
-                distributor=partner, is_active=True
-            ).values_list("provider_id", flat=True)
-            plans = InsurancePlan.objects.filter(
-                provider__in=accessible_providers, is_active=True
+            provider_ids, plan_ids = _accessible_plan_ids_and_providers(partner)
+            plans = InsurancePlan.objects.filter(is_active=True).exclude(
+                visibility="private"
+            ).filter(
+                Q(provider_id__in=provider_ids) | Q(id__in=plan_ids)
             )
 
         context = []
-        for plan in plans:
+        for plan in plans.select_related("provider", "category"):
             context.append({
                 "id": str(plan.id),
                 "name": plan.name,
