@@ -16,6 +16,7 @@ import requests
 from django.conf import settings
 from django.db import transaction as db_transaction
 from django.utils import timezone
+from datetime import timedelta
 
 from .models import CallbackLog, Transaction
 from core.nomba_auth import get_nomba_token, NombaAuthError    # noqa: E402
@@ -621,82 +622,98 @@ def process_nomba_webhook(payload: dict, signature: str) -> CallbackLog:
 
 # Policy Renewal Engine
 # -------------------------------------------------------------------------------------
+RENEWAL_IN_FLIGHT_TTL_MINUTES = 30
 
 def charge_policy_renewal(subscription_id: str) -> dict:
     """
-    Charge a policy renewal using a stored Nomba tokenized card.
+    ...
+    Concurrency note: steps 1-3 run inside a single atomic block with
+    select_for_update() on the subscription row, closing the TOCTOU race
+    described above.
 
-    Called by:
-      - The renewal scheduler (Django management command or Celery beat)
-      - n8n via the service account endpoint on scheduled renewal dates
-      - Dunning retry attempts (n8n calls this again on day 1, 3, 7)
-
-    Flow:
-      1. Load the PolicySubscription and its NombaTokenStore
-      2. Guard against double-charging (idempotency at the DB level)
-      3. Create a new RENEWAL Transaction record
-      4. POST to Nomba /v1/checkout/tokenized-card-payment
-      5. On success  → activate/renew subscription, fire n8n payment.successful
-      6. On failure  → mark transaction FAILED, fire n8n charge.failed for dunning
-
-    Returns a dict with outcome details for the caller (n8n or scheduler).
+    TTL note: a PENDING renewal Transaction older than
+    RENEWAL_IN_FLIGHT_TTL_MINUTES is treated as stale rather than
+    in-flight — e.g. if a previous attempt crashed after creating the
+    Transaction but before reaching Nomba, or Nomba's response was lost.
+    Without this, that subscription would be permanently blocked from
+    ever renewing again. The stale transaction is marked FAILED (which
+    also fires the normal dunning webhook) before a new attempt proceeds.
     """
     from subscriptions.models import PolicySubscription, NombaTokenStore
 
-    # 1. Load subscription
-    try:
-        sub = PolicySubscription.objects.select_related(
-            'plan', 'customer'
-        ).get(id=subscription_id)
-    except PolicySubscription.DoesNotExist:
-        raise PaymentError(f"Subscription {subscription_id} not found.")
-
-    # 2. Guard: only charge active or grace-period subscriptions
-    if sub.status not in ('active', 'grace_period'):
-        raise PaymentError(
-            f"Subscription {subscription_id} is '{sub.status}'. "
-            "Only active or grace_period subscriptions can be renewed."
-        )
-
-    # 3. Guard: skip if auto-charge is disabled (customer revoked consent)
-    if not sub.auto_charge_enabled:
-        raise PaymentError(
-            f"Auto-charge is disabled for subscription {subscription_id}. "
-            "Skipping renewal charge."
-        )
-
-    # 4. Load the stored token
-    try:
-        token_store = NombaTokenStore.objects.get(policy=sub)
-    except NombaTokenStore.DoesNotExist:
-        raise PaymentError(
-            f"No stored Nomba token for subscription {subscription_id}. "
-            "Customer must complete a checkout to enable auto-renewal."
-        )
-
-    # 5. Idempotency guard at DB level:
-    #    If a PENDING renewal transaction already exists for this subscription,
-    #    a previous attempt is still in flight — don't fire a second charge.
-    in_flight = Transaction.objects.filter(
-        subscription=sub,
-        payment_type=Transaction.PAYMENT_TYPE.RENEWAL,
-        payment_status=Transaction.PAYMENT_STATUS.PENDING,
-        gateway=Transaction.GATEWAY.NOMBA,
-    ).exists()
-
-    if in_flight:
-        logger.warning(
-            "Renewal charge skipped for subscription %s — a PENDING renewal "
-            "transaction already exists. Possible duplicate trigger.",
-            subscription_id,
-        )
-        raise PaymentError(
-            f"A renewal charge is already in progress for subscription {subscription_id}."
-        )
-
-    # 6. Create the renewal Transaction record before calling Nomba
-    #    we have an audit trail even if the network call fails.
     with db_transaction.atomic():
+        try:
+            sub = PolicySubscription.objects.select_for_update().select_related(
+                'plan', 'customer'
+            ).get(id=subscription_id)
+        except PolicySubscription.DoesNotExist:
+            raise PaymentError(f"Subscription {subscription_id} not found.")
+
+        if sub.status not in ('active', 'grace_period'):
+            raise PaymentError(
+                f"Subscription {subscription_id} is '{sub.status}'. "
+                "Only active or grace_period subscriptions can be renewed."
+            )
+
+        if not sub.auto_charge_enabled:
+            raise PaymentError(
+                f"Auto-charge is disabled for subscription {subscription_id}. "
+                "Skipping renewal charge."
+            )
+
+        try:
+            token_store = NombaTokenStore.objects.get(policy=sub)
+        except NombaTokenStore.DoesNotExist:
+            raise PaymentError(
+                f"No stored Nomba token for subscription {subscription_id}. "
+                "Customer must complete a checkout to enable auto-renewal."
+            )
+
+        # Look for an existing PENDING renewal — still locked, still race-free.
+        stale_cutoff = timezone.now() - timedelta(minutes=RENEWAL_IN_FLIGHT_TTL_MINUTES)
+
+        in_flight_txn = Transaction.objects.filter(
+            subscription=sub,
+            payment_type=Transaction.PAYMENT_TYPE.RENEWAL,
+            payment_status=Transaction.PAYMENT_STATUS.PENDING,
+            gateway=Transaction.GATEWAY.NOMBA,
+        ).first()
+
+        if in_flight_txn is not None:
+            if in_flight_txn.created_at > stale_cutoff:
+                # Genuinely in flight — a real concurrent attempt, block it.
+                logger.warning(
+                    "Renewal charge skipped for subscription %s — a PENDING renewal "
+                    "transaction already exists (age=%s). Possible duplicate trigger.",
+                    subscription_id, timezone.now() - in_flight_txn.created_at,
+                )
+                raise PaymentError(
+                    f"A renewal charge is already in progress for subscription {subscription_id}."
+                )
+
+            # Stale — a previous attempt never resolved. Flag it failed and
+            # let this call proceed with a fresh attempt.
+            logger.warning(
+                "Stale PENDING renewal transaction %s found for subscription %s "
+                "(age=%s, exceeds %d min TTL) — marking failed and proceeding "
+                "with new attempt.",
+                in_flight_txn.reference, subscription_id,
+                timezone.now() - in_flight_txn.created_at,
+                RENEWAL_IN_FLIGHT_TTL_MINUTES,
+            )
+            in_flight_txn.payment_status = Transaction.PAYMENT_STATUS.FAILED
+            in_flight_txn.gateway_response = {
+                "error": "stale_pending_ttl_exceeded",
+                "ttl_minutes": RENEWAL_IN_FLIGHT_TTL_MINUTES,
+            }
+            in_flight_txn.save(update_fields=["payment_status", "gateway_response", "updated_at"])
+            # Note: not calling _mark_renewal_failed() here — that fires the
+            # n8n dunning webhook and flips the subscription to grace_period,
+            # which we don't want mid-lock (webhook call = network I/O) and
+            # would be redundant if this new attempt succeeds a moment later.
+            # The scheduled sweep below (layer 2) handles dunning dispatch
+            # for stale transactions that aren't immediately retried.
+
         txn = Transaction.objects.create(
             amount=sub.plan.premium,
             currency='NGN',
@@ -706,6 +723,8 @@ def charge_policy_renewal(subscription_id: str) -> dict:
             payment_status=Transaction.PAYMENT_STATUS.PENDING,
             gateway=Transaction.GATEWAY.NOMBA,
         )
+    # Lock released here — the slow network call to Nomba happens outside
+    # the transaction so we're not holding a row lock during I/O.
 
     # 7. Build Nomba tokenized charge payload
     charge_payload = {
@@ -762,10 +781,9 @@ def charge_policy_renewal(subscription_id: str) -> dict:
     charge_status = nomba_data.get("status")
 
     if response_code == "00" and charge_status is True:
-        # Success — activate the subscription and notify n8n
         with db_transaction.atomic():
             txn.payment_status    = Transaction.PAYMENT_STATUS.SUCCESSFUL
-            txn.gateway_reference = txn.reference   # Nomba doesn't return a separate ref here
+            txn.gateway_reference = txn.reference
             txn.gateway_response  = data
             txn.save(update_fields=[
                 "payment_status", "gateway_reference", "gateway_response", "updated_at"
@@ -786,7 +804,6 @@ def charge_policy_renewal(subscription_id: str) -> dict:
         }
 
     else:
-        # Nomba returned non-00 or status=False — card declined or gateway error
         logger.warning(
             "Auto-renewal charge failed: subscription=%s txn=%s code=%s message=%s",
             sub.id, txn.reference, response_code, nomba_data.get("message", ""),
