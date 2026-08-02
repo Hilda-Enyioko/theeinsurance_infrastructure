@@ -1,10 +1,22 @@
 from rest_framework.permissions import BasePermission
 
+class IsStaffMember(BasePermission):
+    """
+    Super Admin or Support Admin 
+    any platform staff role
+    """
+    def has_permission(self, request):
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and request.user.role in ("super_admin", "support_admin")
+        )
+
 class IsSuperAdmin(BasePermission):
     """
     TheeInsurance staff only.
     """
-    def has_permission(self, request, view):
+    def has_permission(self, request):
         return (
             request.user
             and request.user.is_authenticated
@@ -22,6 +34,16 @@ class IsPartnerAdmin(BasePermission):
             and request.user.is_authenticated
             and request.user.role == "partner_admin"
         )
+
+
+class IsPartnerAdminOfOwnOrg(BasePermission):
+    def has_permission(self, request, view):
+        profile = getattr(request.user, "partner_admin_profile", None)
+        return bool(profile and profile.role == "partner_admin")
+
+    def has_object_permission(self, request, view, obj):
+        # obj is the PartnerAdmin being created/modified — must be same org
+        return obj.partner_id == request.user.partner_admin_profile.partner_id
 
 
 class IsCustomer(BasePermission):

@@ -10,7 +10,7 @@ from .models import PolicySubscription, SubscriptionDocument, REQUIRED_DOCUMENTS
 from .serializers import PolicySubscriptionSerializer, PolicySubscriptionCreateSerializer
 from accounts.models import CustomerProfile
 from accounts.permissions import IsCustomer, IsPartnerAdmin
-from plans.models import DistributorProviderAccess
+from plans.models import DistributorAccessGrant
 from webhooks.services import dispatch_webhook
 from core.throttles import PartnerRateThrottle
 
@@ -130,7 +130,7 @@ class CustomerSubscriptionCreateView(APIView):
         distributor = None
 
         if partner.partner_type == "distributor":
-            has_access = DistributorProviderAccess.objects.filter(
+            has_access = DistributorAccessGrant.objects.filter(
                 distributor=partner,
                 provider=plan.provider,
                 is_active=True,

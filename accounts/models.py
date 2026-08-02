@@ -1,15 +1,19 @@
 import uuid
 import secrets
 from django.db import models
+from django.core.exceptions import ValidationError
 from django.contrib.auth.hashers import make_password, check_password
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.utils import timezone
 from core.models import Partner
 from core.storage import KYCDocumentStorage
 
 
-# User Manager
+# Custom User ------------------------------------------------------------------------
 
 class CustomUserManager(BaseUserManager):
+    """Manager for custom user model provisioning."""
+
     def create_user(self, email, password=None, **extra_fields):
         if not email:
             raise ValueError("Email is required.")
@@ -26,127 +30,232 @@ class CustomUserManager(BaseUserManager):
         return self.create_user(email, password, **extra_fields)
 
 
-# Custom User
-
 class CustomUser(AbstractBaseUser, PermissionsMixin):
+    """Unified user authentication foundation table."""
+
     ROLE_CHOICES = [
         ("super_admin", "Super Admin"),
+        ("support_admin", "Support Admin"),
         ("service_account", "Service Account"),
         ("partner_admin", "Partner Admin"),
         ("customer", "Customer"),
     ]
 
-    id: models.UUIDField = models.UUIDField(
+    id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
         editable=False
     )
-
-    email: models.EmailField = models.EmailField(unique=True)
-    first_name: models.CharField = models.CharField(max_length=100)
-    last_name: models.CharField = models.CharField(max_length=100)
-    role: models.CharField = models.CharField(
-        max_length=20,
-        choices=ROLE_CHOICES
-    )
-    is_active: models.BooleanField = models.BooleanField(default=True)
-    is_staff: models.BooleanField = models.BooleanField(default=False)
-    date_joined: models.DateTimeField = models.DateTimeField(auto_now_add=True)
+    email = models.EmailField(unique=True)
+    first_name = models.CharField(max_length=100)
+    last_name = models.CharField(max_length=100)
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    is_active = models.BooleanField(default=True)
+    is_staff = models.BooleanField(default=False)
+    date_joined = models.DateTimeField(auto_now_add=True)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["first_name", "last_name"]
 
     objects = CustomUserManager()
-    
-    class Meta:
-        pass
 
     def __str__(self):
         return f"{self.email} ({self.role})"
 
 
-# Partner Admin Profile
+# Staff --------------------------------------------------------------------------------
 
-class PartnerAdmin(models.Model):
-    ROLE_CHOICES = [
-        ("owner", "Owner"),
-        ("manager", "Manager"),
-        ("viewer", "Viewer"),
+class StaffManager(models.Manager):
+    """Manager rules protecting staff provisioning."""
+
+    def create_staff(self, *, created_by, email, first_name, last_name,
+                     role, password=None, **extra_fields):
+        if created_by is None or created_by.role != "super_admin":
+            raise ValidationError("Only a Super Admin can create a staff account.")
+        if role not in dict(Staff.STAFF_ROLES):
+            raise ValidationError(f"'{role}' is not a valid staff role.")
+
+        staff = Staff(
+            email=CustomUser.objects.normalize_email(email),
+            first_name=first_name,
+            last_name=last_name,
+            role=role,
+            is_staff=True,
+            created_by=created_by,
+            **extra_fields,
+        )
+        staff.set_password(password)
+        staff.save()
+        return staff
+
+
+class Staff(CustomUser):
+    """Multi-table inheritance representing internal organizational staff nodes."""
+
+    STAFF_ROLES = [
+        ("super_admin", "Super Admin"),
+        ("support_admin", "Support Admin"),
+        ("service_account", "Service Account"),
     ]
 
-    id: models.UUIDField = models.UUIDField(
-        primary_key=True, default=uuid.uuid4, editable=False
+    customuser_ptr = models.OneToOneField(
+        CustomUser,
+        on_delete=models.CASCADE,
+        parent_link=True,
+        primary_key=True,
+        related_name="staff_profile"
     )
 
-    user: models.OneToOneField = models.OneToOneField(
-        CustomUser, on_delete=models.CASCADE,
-        related_name="partner_admin_profile"
+    created_by = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        related_name="staff_created",
+        null=True,
+        blank=True,
+        help_text="The Super Admin who provisioned this account.",
+    )
+    is_two_factor_enabled = models.BooleanField(default=False)
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+    deactivated_by = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="staff_deactivated"
     )
 
-    partner: models.ForeignKey = models.ForeignKey(
-        Partner, on_delete=models.CASCADE,
-        related_name="admins"
+    objects = StaffManager()
+
+    def clean(self):
+        super().clean()
+        if self.role not in dict(self.STAFF_ROLES):
+            raise ValidationError(
+                f"role must be one of {list(dict(self.STAFF_ROLES).keys())} for a Staff account, got '{self.role}'."
+            )
+
+    def deactivate(self, *, by):
+        if by.role != "super_admin":
+            raise ValidationError("Only a Super Admin can deactivate a staff account.")
+        self.is_active = False
+        self.deactivated_at = timezone.now()  # Used timezone.now() to preserve Python type parity
+        self.deactivated_by = by
+        self.save(update_fields=["is_active", "deactivated_at", "deactivated_by"])
+
+    def __str__(self):
+        return f"{self.email} — Staff ({self.role})"
+
+
+class StaffLoginEvent(models.Model):
+    """Append-only login auditing stream for security log analysis."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    staff = models.ForeignKey(Staff, on_delete=models.CASCADE, related_name="login_trail")
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=255, blank=True)
+    successful = models.BooleanField(default=True)
+    failure_reason = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)  # Indexed for log performance
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        status = "OK" if self.successful else "FAILED"
+        return f"{self.staff.email} — {status} @ {self.created_at:%Y-%m-%d %H:%M}"
+
+
+# Partner Admin -----------------------------------------------------------------------------
+
+class PartnerAdminManager(models.Manager):
+    """Manager controlling invitation pathways for business partners."""
+
+    def invite_team_member(self, *, inviter, email, first_name, last_name, role):
+        if inviter.role != "partner_admin":
+            raise ValidationError(
+                "Only a partner_admin can invite new team members to the organization."
+            )
+        if role not in dict(PartnerAdmin.ROLE_CHOICES):
+            raise ValidationError(f"'{role}' is not a valid team role.")
+
+        user = CustomUser.objects.create_user(
+            email=email, first_name=first_name, last_name=last_name,
+            role="partner_admin",
+            is_active=False,
+        )
+        return self.create(
+            user=user, partner=inviter.partner, role=role, invited_by=inviter.user
+        )
+
+
+class PartnerAdmin(models.Model):
+    """Profile isolating partner authority attributes from core authentication records."""
+
+    ROLE_CHOICES = [
+        ("partner_admin", "Partner Admin"),
+        ("support_partner_admin", "Support Partner Admin"),
+        ("partner_viewer", "Partner Viewer"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.OneToOneField(
+        CustomUser, on_delete=models.CASCADE, related_name="partner_admin_profile"
     )
-    
-    role: models.CharField = models.CharField(
-        max_length=20,
-        choices=ROLE_CHOICES,
-        default="owner"
+    partner = models.ForeignKey(
+        Partner, on_delete=models.CASCADE, related_name="admins"
     )
-    
-    created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
+    role = models.CharField(max_length=30, choices=ROLE_CHOICES, default="partner_admin")
+    invited_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="team_members_invited",
+        help_text="The partner_admin who invited this team member.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = PartnerAdminManager()
 
     def __str__(self):
         return f"{self.user.email} — {self.partner.name} ({self.role})"
 
 
-# Customer Profile 
+# Customer Profile ----------------------------------------------------------------------
 
 class CustomerProfile(models.Model):
+    """Siloed demographic metadata block matching a user to a transactional partner."""
+
     GENDER_CHOICES = [
         ("male", "Male"),
         ("female", "Female"),
         ("other", "Other"),
     ]
 
-    id: models.UUIDField = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        CustomUser, on_delete=models.CASCADE, related_name="customer_profiles"
     )
-    
-    user: models.ForeignKey = models.ForeignKey(
-        CustomUser,
-        on_delete=models.CASCADE,
-        related_name="customer_profiles"
+    partner = models.ForeignKey(
+        Partner, on_delete=models.CASCADE, related_name="customers"
     )
+    phone_number = models.CharField(max_length=20)
+    date_of_birth = models.DateField(null=True)
+    gender = models.CharField(max_length=10, choices=GENDER_CHOICES)
+    address = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
 
-    partner: models.ForeignKey = models.ForeignKey(
-        Partner, 
-        on_delete=models.CASCADE,
-        related_name="customers"
-    )
-    
-    phone_number: models.CharField = models.CharField(max_length=20)
-    date_of_birth: models.DateField = models.DateField(null=True)
-    gender: models.CharField = models.CharField(
-        max_length=10, choices=GENDER_CHOICES
-    )
-    address: models.TextField = models.TextField()
-    created_at: models.DateTimeField = models.DateTimeField(
-        auto_now_add=True
-    )
-
-    def __str__(self):
-        return f"{self.user.email} — {self.partner.name}"
-    
     class Meta:
         unique_together = ["user", "partner"]
 
+    def __str__(self):
+        return f"{self.user.email} — {self.partner.name}"
 
-# Customer KYC─
+
+# KYC -----------------------------------------------------------------------------------
 
 class CustomerKYC(models.Model):
+    """Identity tracking and verification data linked directly to a customer profile."""
+
     ID_TYPE_CHOICES = [
         ("nin", "National Identity Number"),
         ("bvn", "Bank Verification Number"),
@@ -161,123 +270,78 @@ class CustomerKYC(models.Model):
         ("rejected", "Rejected"),
     ]
 
-    id: models.UUIDField = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    customer = models.OneToOneField(
+        CustomerProfile, on_delete=models.CASCADE, related_name="kyc"
     )
-    
-    customer: models.OneToOneField = models.OneToOneField(
-        CustomerProfile,
-        on_delete=models.CASCADE,
-        related_name="kyc"
-    )
-
-    id_type: models.CharField = models.CharField(
-        max_length=20,
-        choices=ID_TYPE_CHOICES
-    )
-    
-    id_number: models.CharField = models.CharField(
-        max_length=50
-    )
-    
-    id_document: models.FileField = models.FileField(
+    id_type = models.CharField(max_length=20, choices=ID_TYPE_CHOICES)
+    id_number = models.CharField(max_length=50)
+    id_document = models.FileField(
         upload_to="kyc/customers/id/",
         storage=KYCDocumentStorage(),
     )
-    
-    selfie: models.FileField = models.FileField(
+    selfie = models.FileField(
         upload_to="kyc/customers/selfie/",
         blank=True,
         storage=KYCDocumentStorage(),
     )
-    
-    status: models.CharField = models.CharField(
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default="pending"
-    )
-
-    review_note: models.TextField = models.TextField(blank=True)
-    submitted_at: models.DateTimeField = models.DateTimeField(
-        auto_now_add=True
-    )
-    reviewed_at: models.DateTimeField = models.DateTimeField(
-        null=True, blank=True
-    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    review_note = models.TextField(blank=True)
+    submitted_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.customer.user.email} — {self.id_type} ({self.status})"
 
 
-# Partner KYC
-
 class PartnerKYC(models.Model):
+    """Legal corporate authentication records filed by registered business entities."""
+
     STATUS_CHOICES = [
         ("pending", "Pending Review"),
         ("approved", "Approved"),
         ("rejected", "Rejected"),
     ]
 
-    id: models.UUIDField = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False
-    )
-    
-    partner: models.OneToOneField = models.OneToOneField(
-        Partner, on_delete=models.CASCADE, related_name="kyc"
-    )
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    partner = models.OneToOneField(Partner, on_delete=models.CASCADE, related_name="kyc")
+    rc_number = models.CharField(max_length=20, unique=True)
+    naicom_licence_number = models.CharField(max_length=50, blank=True)
+    tax_identification_number = models.CharField(max_length=20, unique=True)
 
-    # Business identity
-    rc_number: models.CharField = models.CharField(max_length=20, unique=True)
-    naicom_licence_number: models.CharField = models.CharField(max_length=50, blank=True)
-    tax_identification_number: models.CharField = models.CharField(max_length=20, unique=True)
-
-    # Documents
     cac_certificate = models.FileField(
-        upload_to="kyc/partners/cac/",
-        storage=KYCDocumentStorage(),
+        upload_to="kyc/partners/cac/", storage=KYCDocumentStorage()
     )
     naicom_licence_doc = models.FileField(
-        upload_to="kyc/partners/naicom/",
-        blank=True,
-        storage=KYCDocumentStorage(),
+        upload_to="kyc/partners/naicom/", blank=True, storage=KYCDocumentStorage()
     )
     proof_of_address = models.FileField(
-        upload_to="kyc/partners/address/",   
-        storage=KYCDocumentStorage(),
+        upload_to="kyc/partners/address/", storage=KYCDocumentStorage()
     )
 
-    # Review
-    status: models.CharField = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
-    reviewed_by: models.CharField = models.CharField(max_length=255, blank=True)
-    review_note: models.TextField = models.TextField(blank=True)
-    submitted_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
-    reviewed_at: models.DateTimeField = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    reviewed_by = models.CharField(max_length=255, blank=True)
+    review_note = models.TextField(blank=True)
+    submitted_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.partner.name} — {self.status}"
 
 
-# Service Account
+# Service Account ---------------------------------------------------------------------------
 
 class ServiceAccountCredential(models.Model):
-    """
-    Client credentials for non-human callers (n8n, schedulers) that need
-    API access without an interactive user login. Tied 1:1 to a CustomUser
-    with role='service_account' so existing permission/JWT machinery works
-    unchanged downstream.
-    """
+    """Machine-to-machine authentication tokens decoupled from passwords or sessions."""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.OneToOneField(
-        CustomUser,
+    staff = models.OneToOneField(
+        Staff,
         on_delete=models.CASCADE,
         related_name="service_credential",
         limit_choices_to={"role": "service_account"},
     )
-    name = models.CharField(max_length=100)  # e.g. "n8n automation"
+    name = models.CharField(max_length=100)
     client_id = models.CharField(max_length=64, unique=True, editable=False)
     client_secret_hash = models.CharField(max_length=128, editable=False)
     is_active = models.BooleanField(default=True)
