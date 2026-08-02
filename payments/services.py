@@ -659,7 +659,7 @@ def charge_policy_renewal(subscription_id: str) -> dict:
         txn = Transaction.objects.create(
             amount=sub.plan.premium,
             currency='NGN',
-            initiated_by=sub.customer,
+            initiated_by=sub.customer.user,
             subscription=sub,
             payment_type=Transaction.PAYMENT_TYPE.RENEWAL,
             payment_status=Transaction.PAYMENT_STATUS.PENDING,
@@ -670,7 +670,7 @@ def charge_policy_renewal(subscription_id: str) -> dict:
     charge_payload = {
         "order": {
             "orderReference": txn.reference,
-            "customerEmail":  sub.customer.email,
+            "customerEmail":  sub.customer.user.email,
             "amount":         float(sub.plan.premium),
             "currency":       "NGN",
             "accountId":      settings.NOMBA_SUB_ACCOUNT_ID,

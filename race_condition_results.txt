@@ -1,0 +1,60 @@
+--- Run 1 ---
+
+FAILED (failures=1)
+Preserving test database for alias 'default'...
+Found 1 test(s).
+System check identified no issues (0 silenced).
+--- Run 2 ---
+
+FAILED (failures=1)
+Preserving test database for alias 'default'...
+Found 1 test(s).
+System check identified no issues (0 silenced).
+--- Run 3 ---
+
+FAILED (failures=1)
+Preserving test database for alias 'default'...
+Found 1 test(s).
+System check identified no issues (0 silenced).
+--- Run 4 ---
+
+FAILED (failures=1)
+Preserving test database for alias 'default'...
+Found 1 test(s).
+System check identified no issues (0 silenced).
+--- Run 5 ---
+
+FAILED (failures=1)
+Preserving test database for alias 'default'...
+Found 1 test(s).
+System check identified no issues (0 silenced).
+--- Run 6 ---
+
+FAILED (failures=1, errors=1)
+Preserving test database for alias 'default'...
+Found 1 test(s).
+System check identified no issues (0 silenced).
+--- Run 7 ---
+
+FAILED (failures=1)
+Preserving test database for alias 'default'...
+Found 1 test(s).
+System check identified no issues (0 silenced).
+--- Run 8 ---
+
+FAILED (failures=1)
+Preserving test database for alias 'default'...
+Found 1 test(s).
+System check identified no issues (0 silenced).
+--- Run 9 ---
+
+FAILED (failures=1)
+Preserving test database for alias 'default'...
+Found 1 test(s).
+System check identified no issues (0 silenced).
+--- Run 10 ---
+
+FAILED (failures=1)
+Preserving test database for alias 'default'...
+Found 1 test(s).
+System check identified no issues (0 silenced).
