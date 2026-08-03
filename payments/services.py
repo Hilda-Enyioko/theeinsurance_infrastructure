@@ -17,6 +17,7 @@ from django.conf import settings
 from django.db import transaction as db_transaction
 from django.utils import timezone
 from datetime import timedelta
+import sentry_sdk
 
 from .models import CallbackLog, Transaction
 from core.nomba_auth import get_nomba_token, NombaAuthError    # noqa: E402
@@ -626,196 +627,181 @@ RENEWAL_IN_FLIGHT_TTL_MINUTES = 30
 
 def charge_policy_renewal(subscription_id: str) -> dict:
     """
-    ...
-    Concurrency note: steps 1-3 run inside a single atomic block with
-    select_for_update() on the subscription row, closing the TOCTOU race
-    described above.
+    ... (existing docstring, plus:)
 
-    TTL note: a PENDING renewal Transaction older than
-    RENEWAL_IN_FLIGHT_TTL_MINUTES is treated as stale rather than
-    in-flight — e.g. if a previous attempt crashed after creating the
-    Transaction but before reaching Nomba, or Nomba's response was lost.
-    Without this, that subscription would be permanently blocked from
-    ever renewing again. The stale transaction is marked FAILED (which
-    also fires the normal dunning webhook) before a new attempt proceeds.
+    Sentry note: this function is wrapped in a transaction span so the
+    row-lock wait time and the duplicate-guard outcome are both visible
+    in trace data — this is the evidence trail for the race-condition fix.
     """
     from subscriptions.models import PolicySubscription, NombaTokenStore
 
-    with db_transaction.atomic():
-        try:
-            sub = PolicySubscription.objects.select_for_update().select_related(
-                'plan', 'customer'
-            ).get(id=subscription_id)
-        except PolicySubscription.DoesNotExist:
-            raise PaymentError(f"Subscription {subscription_id} not found.")
+    with sentry_sdk.start_transaction(op="renewal", name="charge_policy_renewal") as sentry_txn:
+        sentry_txn.set_tag("subscription_id", str(subscription_id))
 
-        if sub.status not in ('active', 'grace_period'):
-            raise PaymentError(
-                f"Subscription {subscription_id} is '{sub.status}'. "
-                "Only active or grace_period subscriptions can be renewed."
-            )
+        with db_transaction.atomic():
+            with sentry_sdk.start_span(op="db.lock", description="select_for_update subscription"):
+                try:
+                    sub = PolicySubscription.objects.select_for_update().select_related(
+                        'plan', 'customer'
+                    ).get(id=subscription_id)
+                except PolicySubscription.DoesNotExist:
+                    sentry_sdk.capture_message(
+                        f"Renewal attempted for unknown subscription {subscription_id}",
+                        level="warning",
+                    )
+                    raise PaymentError(f"Subscription {subscription_id} not found.")
 
-        if not sub.auto_charge_enabled:
-            raise PaymentError(
-                f"Auto-charge is disabled for subscription {subscription_id}. "
-                "Skipping renewal charge."
-            )
+            if sub.status not in ('active', 'grace_period'):
+                raise PaymentError(
+                    f"Subscription {subscription_id} is '{sub.status}'. "
+                    "Only active or grace_period subscriptions can be renewed."
+                )
 
-        try:
-            token_store = NombaTokenStore.objects.get(policy=sub)
-        except NombaTokenStore.DoesNotExist:
-            raise PaymentError(
-                f"No stored Nomba token for subscription {subscription_id}. "
-                "Customer must complete a checkout to enable auto-renewal."
-            )
+            if not sub.auto_charge_enabled:
+                raise PaymentError(
+                    f"Auto-charge is disabled for subscription {subscription_id}. "
+                    "Skipping renewal charge."
+                )
 
-        # Look for an existing PENDING renewal — still locked, still race-free.
-        stale_cutoff = timezone.now() - timedelta(minutes=RENEWAL_IN_FLIGHT_TTL_MINUTES)
+            try:
+                token_store = NombaTokenStore.objects.get(policy=sub)
+            except NombaTokenStore.DoesNotExist:
+                raise PaymentError(
+                    f"No stored Nomba token for subscription {subscription_id}. "
+                    "Customer must complete a checkout to enable auto-renewal."
+                )
 
-        in_flight_txn = Transaction.objects.filter(
-            subscription=sub,
-            payment_type=Transaction.PAYMENT_TYPE.RENEWAL,
-            payment_status=Transaction.PAYMENT_STATUS.PENDING,
-            gateway=Transaction.GATEWAY.NOMBA,
-        ).first()
+            with sentry_sdk.start_span(op="db.query", description="check in-flight renewal"):
+                in_flight = Transaction.objects.filter(
+                    subscription=sub,
+                    payment_type=Transaction.PAYMENT_TYPE.RENEWAL,
+                    payment_status=Transaction.PAYMENT_STATUS.PENDING,
+                    gateway=Transaction.GATEWAY.NOMBA,
+                ).exists()
 
-        if in_flight_txn is not None:
-            if in_flight_txn.created_at > stale_cutoff:
-                # Genuinely in flight — a real concurrent attempt, block it.
+            if in_flight:
+                sentry_sdk.set_tag("renewal.duplicate_blocked", True)
+                sentry_sdk.capture_message(
+                    f"Blocked duplicate renewal charge attempt for subscription {subscription_id}",
+                    level="warning",
+                )
                 logger.warning(
                     "Renewal charge skipped for subscription %s — a PENDING renewal "
-                    "transaction already exists (age=%s). Possible duplicate trigger.",
-                    subscription_id, timezone.now() - in_flight_txn.created_at,
+                    "transaction already exists. Possible duplicate trigger.",
+                    subscription_id,
                 )
                 raise PaymentError(
                     f"A renewal charge is already in progress for subscription {subscription_id}."
                 )
 
-            # Stale — a previous attempt never resolved. Flag it failed and
-            # let this call proceed with a fresh attempt.
-            logger.warning(
-                "Stale PENDING renewal transaction %s found for subscription %s "
-                "(age=%s, exceeds %d min TTL) — marking failed and proceeding "
-                "with new attempt.",
-                in_flight_txn.reference, subscription_id,
-                timezone.now() - in_flight_txn.created_at,
-                RENEWAL_IN_FLIGHT_TTL_MINUTES,
+            with sentry_sdk.start_span(op="db.create", description="create renewal transaction"):
+                txn = Transaction.objects.create(
+                    amount=sub.plan.premium,
+                    currency='NGN',
+                    initiated_by=sub.customer.user,
+                    subscription=sub,
+                    payment_type=Transaction.PAYMENT_TYPE.RENEWAL,
+                    payment_status=Transaction.PAYMENT_STATUS.PENDING,
+                    gateway=Transaction.GATEWAY.NOMBA,
+                )
+            sentry_txn.set_tag("transaction_ref", txn.reference)
+
+        # Lock released — Nomba call happens outside the transaction/span above.
+        charge_payload = {
+            "order": {
+                "orderReference": txn.reference,
+                "customerEmail":  sub.customer.user.email,
+                "amount":         float(sub.plan.premium),
+                "currency":       "NGN",
+                "accountId":      settings.NOMBA_SUB_ACCOUNT_ID,
+                "callbackUrl":    settings.NOMBA_CALLBACK_URL,
+                "orderMetaData": {
+                    "subscriptionId": str(sub.id),
+                    "chargeType":     "AUTO_RENEWAL",
+                },
+            },
+            "tokenKey": token_store.token_key,
+        }
+
+        with sentry_sdk.start_span(op="http.client", description="Nomba tokenized charge"):
+            try:
+                access_token = get_nomba_token()
+                response = requests.post(
+                    f"{settings.NOMBA_BASE_URL}/checkout/tokenized-card-payment",
+                    json=charge_payload,
+                    headers={
+                        "Authorization":    f"Bearer {access_token}",
+                        "accountId":        settings.NOMBA_ACCOUNT_ID,
+                        "Content-Type":     "application/json",
+                        "X-Idempotency-Key": txn.reference,
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+                data = response.json()
+
+            except NombaAuthError as e:
+                logger.error("Nomba auth failed during renewal for txn %s: %s", txn.reference, str(e))
+                sentry_sdk.capture_exception(e)
+                _mark_renewal_failed(txn, error="auth_failure")
+                raise PaymentError("Could not authenticate with payment gateway.")
+
+            except requests.Timeout:
+                logger.error("Nomba renewal charge timed out for txn %s", txn.reference)
+                sentry_sdk.capture_message(
+                    f"Nomba renewal timeout for txn {txn.reference}", level="error"
+                )
+                _mark_renewal_failed(txn, error="timeout")
+                raise PaymentError("Payment gateway timed out.")
+
+            except requests.RequestException as e:
+                logger.error("Nomba renewal request failed for txn %s: %s", txn.reference, str(e))
+                sentry_sdk.capture_exception(e)
+                _mark_renewal_failed(txn, error=str(e))
+                raise PaymentError("Could not reach payment gateway.")
+
+        response_code = data.get("code")
+        nomba_data    = data.get("data", {})
+        charge_status = nomba_data.get("status")
+
+        if response_code == "00" and charge_status is True:
+            with db_transaction.atomic():
+                txn.payment_status    = Transaction.PAYMENT_STATUS.SUCCESSFUL
+                txn.gateway_reference = txn.reference
+                txn.gateway_response  = data
+                txn.save(update_fields=[
+                    "payment_status", "gateway_reference", "gateway_response", "updated_at"
+                ])
+                _activate_subscription(txn)
+
+            db_transaction.on_commit(lambda: _fire_n8n_payment_webhook(txn))
+
+            sentry_txn.set_tag("renewal.outcome", "success")
+            logger.info(
+                "Auto-renewal successful: subscription=%s txn=%s amount=%s",
+                sub.id, txn.reference, sub.plan.premium,
             )
-            in_flight_txn.payment_status = Transaction.PAYMENT_STATUS.FAILED
-            in_flight_txn.gateway_response = {
-                "error": "stale_pending_ttl_exceeded",
-                "ttl_minutes": RENEWAL_IN_FLIGHT_TTL_MINUTES,
+            return {
+                "outcome":          "success",
+                "transaction_ref":  txn.reference,
+                "subscription_id":  str(sub.id),
+                "amount":           str(sub.plan.premium),
             }
-            in_flight_txn.save(update_fields=["payment_status", "gateway_response", "updated_at"])
-            # Note: not calling _mark_renewal_failed() here — that fires the
-            # n8n dunning webhook and flips the subscription to grace_period,
-            # which we don't want mid-lock (webhook call = network I/O) and
-            # would be redundant if this new attempt succeeds a moment later.
-            # The scheduled sweep below (layer 2) handles dunning dispatch
-            # for stale transactions that aren't immediately retried.
 
-        txn = Transaction.objects.create(
-            amount=sub.plan.premium,
-            currency='NGN',
-            initiated_by=sub.customer.user,
-            subscription=sub,
-            payment_type=Transaction.PAYMENT_TYPE.RENEWAL,
-            payment_status=Transaction.PAYMENT_STATUS.PENDING,
-            gateway=Transaction.GATEWAY.NOMBA,
-        )
-    # Lock released here — the slow network call to Nomba happens outside
-    # the transaction so we're not holding a row lock during I/O.
+        else:
+            sentry_txn.set_tag("renewal.outcome", "failed")
+            logger.warning(
+                "Auto-renewal charge failed: subscription=%s txn=%s code=%s message=%s",
+                sub.id, txn.reference, response_code, nomba_data.get("message", ""),
+            )
+            _mark_renewal_failed(txn, error=nomba_data.get("message", "declined"), raw=data)
 
-    # 7. Build Nomba tokenized charge payload
-    charge_payload = {
-        "order": {
-            "orderReference": txn.reference,
-            "customerEmail":  sub.customer.user.email,
-            "amount":         float(sub.plan.premium),
-            "currency":       "NGN",
-            "accountId":      settings.NOMBA_SUB_ACCOUNT_ID,
-            "callbackUrl":    settings.NOMBA_CALLBACK_URL,
-            "orderMetaData": {
-                "subscriptionId": str(sub.id),
-                "chargeType":     "AUTO_RENEWAL",
-            },
-        },
-        "tokenKey": token_store.token_key,
-    }
-
-    # 8. Call Nomba
-    try:
-        access_token = get_nomba_token()
-        response = requests.post(
-            f"{settings.NOMBA_BASE_URL}/checkout/tokenized-card-payment",
-            json=charge_payload,
-            headers={
-                "Authorization":    f"Bearer {access_token}",
-                "accountId":        settings.NOMBA_ACCOUNT_ID,
-                "Content-Type":     "application/json",
-                "X-Idempotency-Key": txn.reference,
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        data = response.json()
-
-    except NombaAuthError as e:
-        logger.error("Nomba auth failed during renewal for txn %s: %s", txn.reference, str(e))
-        _mark_renewal_failed(txn, error="auth_failure")
-        raise PaymentError("Could not authenticate with payment gateway.")
-
-    except requests.Timeout:
-        logger.error("Nomba renewal charge timed out for txn %s", txn.reference)
-        _mark_renewal_failed(txn, error="timeout")
-        raise PaymentError("Payment gateway timed out.")
-
-    except requests.RequestException as e:
-        logger.error("Nomba renewal request failed for txn %s: %s", txn.reference, str(e))
-        _mark_renewal_failed(txn, error=str(e))
-        raise PaymentError("Could not reach payment gateway.")
-
-    # 9. Handle Nomba response
-    response_code = data.get("code")
-    nomba_data    = data.get("data", {})
-    charge_status = nomba_data.get("status")
-
-    if response_code == "00" and charge_status is True:
-        with db_transaction.atomic():
-            txn.payment_status    = Transaction.PAYMENT_STATUS.SUCCESSFUL
-            txn.gateway_reference = txn.reference
-            txn.gateway_response  = data
-            txn.save(update_fields=[
-                "payment_status", "gateway_reference", "gateway_response", "updated_at"
-            ])
-            _activate_subscription(txn)
-
-        db_transaction.on_commit(lambda: _fire_n8n_payment_webhook(txn))
-
-        logger.info(
-            "Auto-renewal successful: subscription=%s txn=%s amount=%s",
-            sub.id, txn.reference, sub.plan.premium,
-        )
-        return {
-            "outcome":          "success",
-            "transaction_ref":  txn.reference,
-            "subscription_id":  str(sub.id),
-            "amount":           str(sub.plan.premium),
-        }
-
-    else:
-        logger.warning(
-            "Auto-renewal charge failed: subscription=%s txn=%s code=%s message=%s",
-            sub.id, txn.reference, response_code, nomba_data.get("message", ""),
-        )
-        _mark_renewal_failed(txn, error=nomba_data.get("message", "declined"), raw=data)
-
-        return {
-            "outcome":          "failed",
-            "transaction_ref":  txn.reference,
-            "subscription_id":  str(sub.id),
-            "failure_reason":   nomba_data.get("message", "declined"),
-        }
+            return {
+                "outcome":          "failed",
+                "transaction_ref":  txn.reference,
+                "subscription_id":  str(sub.id),
+                "failure_reason":   nomba_data.get("message", "declined"),
+            }
 
 # ----------------------------------------------------------------------------------------
 

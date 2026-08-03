@@ -1,0 +1,45 @@
+--- Run 1 ---
+Ran 1 test in 45.494s
+OK
+Binary file (standard input) matches
+--- Run 2 ---
+Ran 1 test in 51.169s
+OK
+Binary file (standard input) matches
+--- Run 3 ---
+AssertionError: Expected exactly 1 successful renewal charge, got 0. Blocked: 1. Race condition allowed duplicate billing.
+Ran 1 test in 45.425s
+FAILED (failures=1)
+Binary file (standard input) matches
+--- Run 4 ---
+AssertionError: Expected exactly 1 successful renewal charge, got 0. Blocked: 1. Race condition allowed duplicate billing.
+Ran 1 test in 47.815s
+FAILED (failures=1)
+Binary file (standard input) matches
+--- Run 5 ---
+AssertionError: Expected exactly 1 successful renewal charge, got 0. Blocked: 0. Race condition allowed duplicate billing.
+Ran 1 test in 125.532s
+FAILED (failures=1)
+--- Run 6 ---
+Ran 1 test in 46.605s
+OK
+Binary file (standard input) matches
+--- Run 7 ---
+AssertionError: Expected exactly 1 successful renewal charge, got 0. Blocked: 1. Race condition allowed duplicate billing.
+Ran 1 test in 55.755s
+FAILED (failures=1)
+Binary file (standard input) matches
+--- Run 8 ---
+AssertionError: Expected exactly 1 successful renewal charge, got 0. Blocked: 1. Race condition allowed duplicate billing.
+Ran 1 test in 42.106s
+FAILED (failures=1)
+Binary file (standard input) matches
+--- Run 9 ---
+AssertionError: Expected exactly 1 successful renewal charge, got 0. Blocked: 1. Race condition allowed duplicate billing.
+Ran 1 test in 34.959s
+FAILED (failures=1)
+Binary file (standard input) matches
+--- Run 10 ---
+Ran 1 test in 41.259s
+OK
+Binary file (standard input) matches

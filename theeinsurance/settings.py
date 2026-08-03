@@ -188,7 +188,6 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "x-partner-key",
 ]
-print("CORS_ALLOWED_HEADERS =", CORS_ALLOW_HEADERS)
 
 CORS_ALLOW_CREDENTIALS = True
 
@@ -291,3 +290,18 @@ STORAGES = {
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 WHITENOISE_MANIFEST_STRICT = False
+
+# settings.py
+import sentry_sdk
+from sentry_sdk.integrations.django import DjangoIntegration
+
+sentry_sdk.init(
+    dsn=config("SENTRY_DSN"),
+    integrations=[DjangoIntegration()],
+    traces_sample_rate=1.0,
+    profiles_sample_rate=1.0,
+    send_default_pii=False,
+)
+
+# Google AI
+GOOGLE_AI_API_KEY = config("GOOGLE_AI_API_KEY")
