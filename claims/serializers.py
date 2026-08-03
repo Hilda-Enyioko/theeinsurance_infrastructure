@@ -45,7 +45,7 @@ class ClaimSerializer(serializers.ModelSerializer):
         ]
 
 
-class ClaimCreateSerializer(serializers.ModelSerializer):
+class ClaimCreateSerializer(serializers.Serializer):
     subscription_id = serializers.UUIDField()
     claim_type = serializers.ChoiceField(choices=Claim.CLAIM_TYPE_CHOICES)
     incident_date = serializers.DateField()
@@ -88,7 +88,7 @@ class ClaimCreateSerializer(serializers.ModelSerializer):
         return attrs
     
 
-class ClaimReviewSerializer(serializers.ModelSerializer):
+class ClaimReviewSerializer(serializers.Serializer):
     """
     Used by TheeInsurance staff and provider admins to review claims.
     """

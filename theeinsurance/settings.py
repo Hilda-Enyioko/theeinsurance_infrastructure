@@ -16,6 +16,7 @@ from datetime import timedelta
 from decouple import config  # type: ignore
 import dotenv
 import dj_database_url
+from corsheaders.defaults import default_headers
 
 dotenv.load_dotenv()
 
@@ -68,6 +69,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware', 
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -180,13 +182,14 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://mock-insurance-customer-portal.vercel.app",
 ]
 
-CORS_ALLOWED_HEADERS = [
-    'authorization',
-    'content-type',
-    'x-partner-key',
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "x-partner-key",
 ]
+
+CORS_ALLOW_CREDENTIALS = True
 
 AUTH_USER_MODEL = "accounts.CustomUser"
 
@@ -260,4 +263,45 @@ SPECTACULAR_SETTINGS = {
     },
     "OPERATION_ID_NAMING_STRATEGY": "operation_id",
     "SCHEMA_PATH_PREFIX": r"/api/v[0-9]",
+    "COMPONENT_SPLIT_REQUEST": True,
+    "ENUM_NAME_OVERRIDES": {
+        "ClaimStatusEnum": "claims.models.Claim.STATUS_CHOICES",
+        "SubscriptionStatusEnum": "subscriptions.models.PolicySubscription.STATUS_CHOICES",
+        "PlanCoverageLevelEnum": "plans.models.InsurancePlan.COVERAGE_LEVELS",
+        "InsuranceCategoryEnum": "plans.models.InsuranceCategory.CATEGORY_CHOICES",
+        "SubscriptionDocumentTypeChoicesEnum": "subscriptions.models.SubscriptionDocument.DOCUMENT_TYPE_CHOICES",
+        "CallbackLogStatusEnum": "payments.models.CallbackLog.Status",
+        "KYCReviewStatusEnum": "accounts.models.CustomerKYC.STATUS_CHOICES",  # covers both CustomerKYC and PartnerKYC
+        "CustomerKYCTypeEnum": "accounts.models.CustomerKYC.ID_TYPE_CHOICES",
+    },
 }
+
+STORAGES = {
+    "default": {
+        "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
+
+# Legacy alias — required because django-cloudinary-storage's collectstatic
+# override reads STATICFILES_STORAGE directly instead of STORAGES["staticfiles"]
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+WHITENOISE_MANIFEST_STRICT = False
+
+# settings.py
+import sentry_sdk
+from sentry_sdk.integrations.django import DjangoIntegration
+
+sentry_sdk.init(
+    dsn=config("SENTRY_DSN"),
+    integrations=[DjangoIntegration()],
+    traces_sample_rate=1.0,
+    profiles_sample_rate=1.0,
+    send_default_pii=False,
+)
+
+# Google AI
+GOOGLE_AI_API_KEY = config("GOOGLE_AI_API_KEY")

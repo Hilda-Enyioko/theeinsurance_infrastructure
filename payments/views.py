@@ -16,7 +16,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils import timezone
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 
 from .models import Transaction
 from .serializers import InitiatePaymentSerializer, TransactionSerializer
@@ -30,6 +30,7 @@ from .services import (
     process_interswitch_webhook,
     process_nomba_webhook,
     verify_transaction,
+    verify_nomba_transaction,
     initiate_nomba_checkout,
     charge_policy_renewal,
 )
@@ -43,20 +44,31 @@ class InitiatePaymentView(APIView):
 
     Validates the request, creates a PENDING Transaction, calls Interswitch
     to get a payment URL, and returns it to the frontend for redirect.
-
-    Request body:
-        subscription_id (UUID): The PolicySubscription to pay for.
-        payment_type (str):     NEW_SUBSCRIPTION or RENEWAL.
-
-    Response:
-        200: { payment_url, reference }
-        400: Validation error
-        502: Gateway error
     """
 
     permission_classes = [IsAuthenticated]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Initiate Interswitch Payment",
+        description=(
+            "Validates the request, creates a PENDING Transaction record, "
+            "calls Interswitch to fetch a payment URL, and returns it to the frontend."
+        ),
+        request=InitiatePaymentSerializer,
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "payment_url": {"type": "string", "format": "uri"},
+                    "reference": {"type": "string"},
+                },
+            },
+            400: {"description": "Validation error."},
+            502: {"description": "Gateway error."},
+        },
+        tags=["Payments"]
+    )
     def post(self, request: Request) -> Response:
         serializer = InitiatePaymentSerializer(
             data=request.data,
@@ -89,20 +101,34 @@ class PaymentCallbackView(APIView):
     Interswitch redirects the user here after a payment attempt.
     Verifies the transaction status with Interswitch, updates the Transaction
     record, and returns the current state to the frontend.
-
-    Query params:
-        ref (str): Internal transaction reference (TII-XXXX).
-
-    Response:
-        200: TransactionSerializer data
-        400: Missing reference
-        404: Transaction not found
-        502: Gateway verification error
     """
 
     permission_classes = [IsAuthenticated]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Interswitch Payment Callback",
+        description=(
+            "Handles the user redirect landing from Interswitch. Verifies the status "
+            "with the gateway if still pending, updates the database, and returns the transaction state."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="ref",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Internal transaction reference (e.g., TII-XXXX).",
+            )
+        ],
+        responses={
+            200: TransactionSerializer,
+            400: {"description": "Missing transaction reference."},
+            404: {"description": "Transaction not found."},
+            502: {"description": "Gateway verification error."},
+        },
+        tags=["Payments"]
+    )
     def get(self, request: Request) -> Response:
         reference = request.query_params.get('ref')
 
@@ -160,22 +186,36 @@ class InterswitchWebhookView(APIView):
 
     Interswitch server-to-server callback. No authentication required
     (Interswitch won't send JWT), but signature verification is mandatory.
-
-    This view is intentionally minimal — all logic lives in process_webhook().
-    Always returns 200 to Interswitch even on duplicates/flags, to prevent
-    Interswitch from retrying indefinitely.
-
-    Headers:
-        x-interswitch-signature: HMAC-SHA512 of raw body
-
-    Response:
-        200: Always (processing outcome is logged, not surfaced)
     """
 
     permission_classes = []
     authentication_classes = []
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Interswitch Server Webhook",
+        description=(
+            "Receives server-to-server transaction status notifications from Interswitch. "
+            "Requires an 'x-interswitch-signature' header. Always returns a 200 OK to stop retries."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="x-interswitch-signature",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.HEADER,
+                required=True,
+                description="HMAC-SHA512 signature of the raw request body.",
+            )
+        ],
+        request={"application/json": {"type": "object"}},
+        responses={
+            200: {"description": "Webhook received successfully (outcome is logged asynchronously)."},
+            400: {"description": "Missing signature or invalid JSON payload."},
+            401: {"description": "Invalid signature verification failure."},
+        },
+        tags=["Webhooks"],
+        auth=[],
+    )
     def post(self, request: Request) -> Response:
         signature = request.headers.get('x-interswitch-signature', '')
 
@@ -220,29 +260,6 @@ class InterswitchWebhookView(APIView):
 class NombaCheckoutView(APIView):
     """
     POST /payments/nomba/checkout/
-
-    Partner backend calls this after:
-      1. Customer has selected a plan (subscription in 'pending_payment')
-      2. Customer has explicitly consented to automated renewal charges
-
-    Request body:
-      {
-        "subscription_id":    "<uuid>",
-        "customer_consented": true
-      }
-
-    Response:
-      {
-        "checkout_link":   "https://checkout.nomba.com/pay/...",
-        "order_reference": "<nomba-order-ref>",
-        "transaction_ref": "TII-XXXXXXXX",
-        "amount":          "5000.00",
-        "currency":        "NGN"
-      }
-
-    The partner redirects their customer to checkout_link to complete payment.
-    On success, Nomba fires a webhook to /payments/nomba/webhook/ containing
-    the tokenKey for future automated charges.
     """
     permission_classes = [IsAuthenticated]
     throttle_classes   = [PartnerRateThrottle]
@@ -285,8 +302,7 @@ class NombaCheckoutView(APIView):
             400: {"description": "Validation error or subscription not in correct state."},
             500: {"description": "Gateway error."},
         },
-        tags=["Payments"],
-        auth=["jwtAuth"],
+        tags=["Payments"]
     )
     def post(self, request: Request) -> Response:
         subscription_id    = request.data.get("subscription_id")
@@ -320,6 +336,106 @@ class NombaCheckoutView(APIView):
             )
 
 
+# views.py
+
+# views.py
+
+class NombaCallbackView(APIView):
+    """
+    GET /payments/nomba/callback/
+
+    Nomba redirects the customer here after a checkout attempt (success or
+    failure). No authentication — the customer arrives straight from
+    Nomba's hosted checkout page and won't be carrying a JWT.
+
+    Nomba appends `orderReference` as the query param (not `ref`, which is
+    Interswitch's convention), and that value maps to Transaction.gateway_reference,
+    not Transaction.reference — initiate_nomba_checkout() stores it there.
+
+    If the webhook hasn't landed yet (still PENDING), re-verifies directly
+    with Nomba as a second source of truth, same pattern as PaymentCallbackView.
+    """
+
+    permission_classes = []
+    authentication_classes = []
+    throttle_classes = [PartnerRateThrottle]
+
+    @extend_schema(
+        summary="Nomba Payment Callback",
+        description=(
+            "Handles the user redirect landing from Nomba after checkout. "
+            "Re-verifies with Nomba directly if still pending (webhook may not "
+            "have landed yet), updates the database, and returns the transaction state."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="orderReference",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Nomba order reference, appended by Nomba on redirect.",
+            )
+        ],
+        responses={
+            200: TransactionSerializer,
+            400: {"description": "Missing orderReference."},
+            404: {"description": "Transaction not found."},
+            502: {"description": "Gateway verification error."},
+        },
+        tags=["Payments"],
+    )
+    def get(self, request: Request) -> Response:
+        order_reference = request.query_params.get('orderReference')
+
+        if not order_reference:
+            return Response(
+                {"detail": "Missing orderReference."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            txn = Transaction.objects.get(gateway_reference=order_reference)
+        except Transaction.DoesNotExist:
+            return Response(
+                {"detail": "Transaction not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Only re-verify with gateway if still PENDING
+        # (webhook may have already updated it)
+        if txn.payment_status == Transaction.PAYMENT_STATUS.PENDING:
+            try:
+                gateway_data = verify_nomba_transaction(order_reference)
+                nomba_data = gateway_data.get("data", {})
+                gateway_status = nomba_data.get("status", "")
+
+                txn.gateway_response = gateway_data
+                txn.payment_status = (
+                    Transaction.PAYMENT_STATUS.SUCCESSFUL
+                    if gateway_status == "SUCCESS"
+                    else Transaction.PAYMENT_STATUS.FAILED
+                    if gateway_status == "FAILED"
+                    else Transaction.PAYMENT_STATUS.PENDING
+                )
+                txn.save(update_fields=[
+                    "payment_status",
+                    "gateway_response",
+                    "updated_at"
+                ])
+
+            except PaymentError as e:
+                logger.warning(
+                    "Could not verify Nomba txn %s on callback: %s", order_reference, str(e)
+                )
+                # Return current state even if verification fails —
+                # webhook will reconcile asynchronously
+
+        return Response(
+            TransactionSerializer(txn).data,
+            status=status.HTTP_200_OK
+        )
+
+
 class NombaWebhookView(APIView):
     """
     POST /payments/nomba/webhook/
@@ -328,24 +444,43 @@ class NombaWebhookView(APIView):
     No authentication required — Nomba won't send a JWT.
     Signature verification is mandatory and happens inside
     process_nomba_webhook().
-
-    Nomba signs using a composite string (not raw body). The timestamp
-    header is extracted here and injected into the payload dict before
-    passing to the service, so the service has everything it needs for
-    verification without an extra function parameter.
-
-    Headers:
-        nomba-signature:  HMAC-SHA256 base64 of composite string
-        nomba-timestamp:  timestamp string used in signature construction
-
-    Response:
-        200: Always — outcome is logged, not surfaced to Nomba
     """
 
     permission_classes     = []
     authentication_classes = []
     throttle_classes       = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Nomba Server Webhook",
+        description=(
+            "Handles checkout processing updates asynchronously from Nomba. "
+            "Validates authenticity via custom timestamp composite cryptographic headers."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="nomba-signature",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.HEADER,
+                required=True,
+                description="HMAC-SHA256 base64 string derived from composite structural context.",
+            ),
+            OpenApiParameter(
+                name="nomba-timestamp",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.HEADER,
+                required=True,
+                description="Epoch time format token assigned to prevent payload mutation.",
+            ),
+        ],
+        request={"application/json": {"type": "object"}},
+        responses={
+            200: {"description": "Payload received and verified."},
+            400: {"description": "Missing custom layout headers or semantic parser JSON issues."},
+            401: {"description": "Signature verification engine denied transaction execution context."},
+        },
+        tags=["Webhooks"],
+        auth=[],
+    )
     def post(self, request: Request) -> Response:
         signature = request.headers.get("nomba-signature", "")
         timestamp = request.headers.get("nomba-timestamp", "")
@@ -396,24 +531,6 @@ class NombaWebhookView(APIView):
 class NombaRenewalChargeView(APIView):
     """
     POST /payments/nomba/renewal/charge/
-
-    Triggers an auto-renewal charge for a subscription using its stored
-    Nomba tokenized card. Called by:
-      - n8n on scheduled renewal dates (via service account JWT)
-      - n8n dunning retries on day 1, 3, 7 after charge failure
-      - Internal scheduler (management command)
-
-    Request body:
-      { "subscription_id": "<uuid>" }
-
-    Response:
-      {
-        "outcome":         "success" | "failed",
-        "transaction_ref": "TII-XXXXXXXX",
-        "subscription_id": "<uuid>",
-        "amount":          "5000.00"          (on success)
-        "failure_reason":  "declined"         (on failure)
-      }
     """
     permission_classes = [IsAuthenticated]
     throttle_classes   = [PartnerRateThrottle]
@@ -450,8 +567,7 @@ class NombaRenewalChargeView(APIView):
             },
             400: {"description": "Missing or invalid subscription_id, or business rule violation."},
         },
-        tags=["Payments"],
-        auth=["jwtAuth"],
+        tags=["Payments"]
     )
     def post(self, request: Request) -> Response:
         subscription_id = request.data.get("subscription_id")
@@ -485,20 +601,40 @@ class DunningFinalFailureView(APIView):
     Called by n8n once the dunning schedule (day 1, 3, 7) is exhausted and
     the subscription still hasn't recovered. Marks the subscription
     cancelled and dispatches a subscription.cancelled webhook to the
-    partner so they can inform their customer through their own channel.
-
-    Request body:
-        subscription_id (UUID): required
-        transaction_ref (str):  the last failed renewal Transaction reference
-        reason (str):           optional, e.g. "dunning_exhausted"
-
-    Response:
-        200: { message, subscription_id }
-        400: Missing subscription_id
-        404: Subscription not found
+    partner.
     """
     permission_classes = [IsServiceAccount]
 
+    @extend_schema(
+        summary="Handle Final Dunning Failure",
+        description=(
+            "Executes post-dunning lifecycle automation routines when recovery attempts fail. "
+            "Terminates active access windows and transitions state explicitly to 'lapsed'."
+        ),
+        request={
+            "application/json": {
+                "type": "object",
+                "required": ["subscription_id"],
+                "properties": {
+                    "subscription_id": {"type": "string", "format": "uuid"},
+                    "transaction_ref": {"type": "string", "description": "Last failing reference string context."},
+                    "reason": {"type": "string", "default": "dunning_exhausted"},
+                },
+            }
+        },
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string"},
+                    "subscription_id": {"type": "string", "format": "uuid"},
+                },
+            },
+            400: {"description": "Missing subscription identifier parameters."},
+            404: {"description": "Target subscription reference does not exist contextually."},
+        },
+        tags=["Payments"]
+    )
     def post(self, request):
         subscription_id = request.data.get("subscription_id")
         transaction_ref = request.data.get("transaction_ref", "")
@@ -556,4 +692,3 @@ class DunningFinalFailureView(APIView):
             "message": "Subscription lapsed and partner notified.",
             "subscription_id": str(sub.id),
         }, status=200)
-

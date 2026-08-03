@@ -3,6 +3,9 @@ from rest_framework.response import Response
 from dateutil.relativedelta import relativedelta
 from decimal import Decimal
 
+# Import drf-spectacular tools
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
+
 from .models import PolicySubscription, SubscriptionDocument, REQUIRED_DOCUMENTS
 from .serializers import PolicySubscriptionSerializer, PolicySubscriptionCreateSerializer
 from accounts.models import CustomerProfile
@@ -58,6 +61,21 @@ class CustomerSubscriptionListView(APIView):
     permission_classes = [IsCustomer]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="List Customer Subscriptions",
+        description="Allows a customer to view their active or past policy subscriptions.",
+        parameters=[
+            OpenApiParameter(
+                name="status",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Filter subscriptions by status (e.g., active, pending_payment, cancelled)",
+                required=False
+            )
+        ],
+        responses={200: PolicySubscriptionSerializer(many=True)},
+        tags=["Subscriptions: Customer"]
+    )
     def get(self, request):
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
@@ -83,6 +101,17 @@ class CustomerSubscriptionCreateView(APIView):
     permission_classes = [IsCustomer]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Initiate a Subscription",
+        description="Initiate a new insurance policy subscription. Returns details on required document uploads.",
+        request=PolicySubscriptionCreateSerializer,
+        responses={
+            201: OpenApiTypes.OBJECT,
+            400: OpenApiTypes.OBJECT,
+            403: OpenApiTypes.OBJECT
+        },
+        tags=["Subscriptions: Customer"]
+    )
     def post(self, request):
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
@@ -145,6 +174,22 @@ class SubscriptionDocumentUploadView(APIView):
     permission_classes = [IsCustomer]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Upload Subscription Document",
+        description="Uploads a single file required for the subscription evaluation.",
+        request={
+            'multipart/form-data': {
+                'type': 'object',
+                'properties': {
+                    'document_type': {'type': 'string', 'description': 'The code representing the document requirement.'},
+                    'file': {'type': 'string', 'format': 'binary', 'description': 'The physical file payload.'}
+                },
+                'required': ['document_type', 'file']
+            }
+        },
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+        tags=["Subscriptions: Customer"]
+    )
     def post(self, request, subscription_id):
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
@@ -212,6 +257,12 @@ class SubscriptionDocumentUploadView(APIView):
             "missing_documents": missing_docs,
         })
 
+    @extend_schema(
+        summary="View Subscription Document Checklist",
+        description="Returns lists of uploaded, required, and missing documentation statuses.",
+        responses={200: OpenApiTypes.OBJECT},
+        tags=["Subscriptions: Customer"]
+    )
     def get(self, request, subscription_id):
         """Returns uploaded documents and what is still missing."""
         try:
@@ -263,6 +314,12 @@ class CustomerSubscriptionDetailView(APIView):
         except PolicySubscription.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="Retrieve Subscription Detail",
+        description="Fetch explicit object properties of a given customer subscription instance.",
+        responses={200: PolicySubscriptionSerializer},
+        tags=["Subscriptions: Customer"]
+    )
     def get(self, request, subscription_id):
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
@@ -276,6 +333,12 @@ class CustomerSubscriptionDetailView(APIView):
         serializer = PolicySubscriptionSerializer(subscription)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="Cancel Subscription",
+        description="Transition an active subscription directly into a 'cancelled' status.",
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+        tags=["Subscriptions: Customer"]
+    )
     def delete(self, request, subscription_id):
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
@@ -319,6 +382,21 @@ class PaymentVerificationView(APIView):
     permission_classes = [IsCustomer]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Verify Payment Reference",
+        description="Submit gateway confirmation hashes to transition status out of pending_payment and into active.",
+        request={
+            'application/json': {
+                'type': 'object',
+                'properties': {
+                    'payment_reference': {'type': 'string', 'description': 'Transaction reference ID from payment gateway.'}
+                },
+                'required': ['payment_reference']
+            }
+        },
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+        tags=["Subscriptions: Customer"]
+    )
     def post(self, request, subscription_id):
         try:
             profile = request.user.customer_profiles.get(partner=request.partner)
@@ -392,6 +470,21 @@ class PartnerSubscriptionListView(APIView):
     permission_classes = [IsPartnerAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Partner List Subscriptions",
+        description="Allows providers or distributors to view corporate-relevant subscriptions depending on organizational context.",
+        parameters=[
+            OpenApiParameter(
+                name="status",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Filter context scope via current state mapping context attributes.",
+                required=False
+            )
+        ],
+        responses={200: PolicySubscriptionSerializer(many=True)},
+        tags=["Subscriptions: Partner"]
+    )
     def get(self, request):
         partner = get_partner_from_user(request.user)
 
