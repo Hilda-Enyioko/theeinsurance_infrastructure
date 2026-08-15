@@ -2,7 +2,7 @@
 
 A headless, API-first insurance distribution platform — "Stripe for insurance" for Nigeria. Companies integrate TheeInsurance into their products via API and offer insurance plans to their customers without building the insurance layer themselves.
 
-Built for the **DevCareer x Nomba Hack4FUTO** hackathon by team **Meridian**.
+Built for by team **Meridian**.
 
 ## What it does
 
