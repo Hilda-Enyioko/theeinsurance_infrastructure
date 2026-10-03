@@ -165,9 +165,6 @@ STORAGES = {
     },
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
-        "OPTIONS": {
-            "manifest_strict": False,
-        },
     },
 }
 
