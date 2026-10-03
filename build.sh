@@ -2,7 +2,7 @@
 set -e
 
 pip install -r requirements.txt
-python manage.py collectstatic --noinput
+python manage.py collectstatic --noinput --clear
 
 if [ -n "$DIRECT_DATABASE_URL" ]; then
     export DATABASE_URL="$DIRECT_DATABASE_URL"
