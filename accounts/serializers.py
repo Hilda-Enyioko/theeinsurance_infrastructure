@@ -109,10 +109,10 @@ class PartnerOnboardingSerializer(serializers.Serializer):
     partner_name = serializers.CharField(max_length=255)
     partner_slug = serializers.CharField(max_length=100)
     partner_type = serializers.ChoiceField(choices=Partner.PARTNER_TYPE_CHOICES)
-
-    # Distributor-specific properties
-    commission_rate = serializers.DecimalField(
-        max_digits=5, decimal_places=2, required=False, default=0.00
+    commission_rate = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, default=0.00)
+    nomba_account_id = serializers.CharField(
+        max_length=100, required=False, allow_blank=True, allow_null=True, default=None,
+        help_text="Optional. Leave blank if this partner will use Interswitch instead of Nomba."
     )
 
     # Provider-specific properties
@@ -166,16 +166,15 @@ class PartnerOnboardingSerializer(serializers.Serializer):
         """
         partner_type = validated_data.pop("partner_type")
         commission_rate = validated_data.pop("commission_rate", 0.00)
-        naicom_licence_number = validated_data.pop("naicom_licence_number", "")
-        settlement_bank_account = validated_data.pop("settlement_bank_account", "")
-        settlement_bank_code = validated_data.pop("settlement_bank_code", "")
+        nomba_account_id = validated_data.pop("nomba_account_id", None)
         validated_data.pop("confirm_password")
 
         partner = Partner.objects.create(
             name=validated_data.pop("partner_name"),
             slug=validated_data.pop("partner_slug"),
             partner_type=partner_type,
-            is_active=False,  # Inactive status until KYC is successfully checked
+            nomba_account_id=nomba_account_id,
+            is_active=False, # inactive until KYC is approved
         )
 
         if partner_type == "distributor":
@@ -373,3 +372,24 @@ class PartnerKYCSerializer(serializers.ModelSerializer):
             "submitted_at",
         ]
         read_only_fields = ["id", "status", "submitted_at"]
+
+
+class PartnerMeSerializer(serializers.Serializer):
+    partner_type = serializers.CharField(source='partner_admin_profile.partner.partner_type')
+    partner_name = serializers.CharField(source='partner_admin_profile.partner.name')
+    is_active = serializers.BooleanField(source='partner_admin_profile.partner.is_active')
+
+
+class PartnerPasswordConfirmSerializer(serializers.Serializer):
+    """
+    Shared by both key-retrieval and key-regeneration — requires the
+    authenticated partner admin to re-enter their password before either
+    viewing or rotating the sensitive api_key.
+    """
+    password = serializers.CharField(write_only=True, required=True)
+
+    def validate_password(self, value):
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Incorrect password.")
+        return value

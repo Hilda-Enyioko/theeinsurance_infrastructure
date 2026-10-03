@@ -16,12 +16,23 @@ from drf_spectacular.utils import (
     extend_schema,
 )
 from rest_framework import status
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt import tokens as jwt_tokens
 from rest_framework_simplejwt.exceptions import TokenError
-from .utils import get_partner_from_user, is_full_partner_admin
+from django.contrib.auth import authenticate
+from django.utils import timezone
+from datetime import timedelta
+from drf_spectacular.utils import (
+    extend_schema,
+    OpenApiParameter,
+    OpenApiTypes,
+    OpenApiResponse,
+)
 
 from accounts.permissions import (
     IsCustomer,
@@ -47,11 +58,8 @@ from .serializers import (
     CustomerRegistrationSerializer,
     LoginSerializer,
     PartnerKYCSerializer,
-    PartnerOnboardingSerializer,
-    PartnerTeamInviteSerializer,
-    PartnerTeamMemberSerializer,
-    StaffCreateSerializer,
-    StaffSerializer,
+    PartnerMeSerializer,
+    PartnerPasswordConfirmSerializer,
 )
 
 
@@ -528,21 +536,168 @@ class LoginView(APIView):
         partner_id = partner.id if partner else None
         tokens = generate_tokens(user, partner_id=partner_id)
 
+        return Response({
+            "tokens": tokens,
+            "role": user.role,
+            "email": user.email,
+            "first_name": user.first_name,
+        })
+
+
+class PartnerMeView(APIView):
+    """
+    GET /partner/me/
+    Returns partner_type and partner_name for the authenticated partner admin.
+    Called by the partner portal immediately after login.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        summary="Get authenticated partner details",
+        description="Retrieves the `partner_type` and `partner_name` for the currently logged-in partner admin.",
+        responses={
+            200: PartnerMeSerializer,
+            403: OpenApiResponse(
+                description="The authenticated user is not a partner admin or lacks a profile."
+            ),
+        },
+        tags=["Partner Management"]
+    )
+    def get(self, request):
+        user = request.user
+
+        if user.role != "partner_admin" or not hasattr(
+            user, "partner_admin_profile"
+        ):
+            return Response(
+                {"detail": "This account is not linked to a partner."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = PartnerMeSerializer(user)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class PartnerAPIKeyRetrieveView(APIView):
+    """
+    POST /partner/api-key/retrieve/
+    Confirms the caller's password, then returns the partner's CURRENT
+    api_key unchanged. Safe to call repeatedly — does not rotate the key,
+    so other logged-in admins and the partner's end-user portal are
+    unaffected. Use this for "log in on a new device" / "reconfigure my
+    integration" scenarios.
+    """
+    permission_classes = [IsPartnerAdmin]
+    throttle_classes = [PartnerRateThrottle]
+
+    @extend_schema(
+        summary="Retrieve Current Partner API Key",
+        description=(
+            "Returns the partner's existing api_key (X-Partner-Key) after confirming "
+            "the caller's password. Does NOT rotate the key — safe to call from "
+            "multiple admin sessions without affecting other integrations already "
+            "using the key."
+        ),
+        request=PartnerPasswordConfirmSerializer,
+        responses={
+            200: {
+                "type": "object",
+                "properties": {"api_key": {"type": "string"}},
+            },
+            400: {"description": "Missing or incorrect password."},
+            403: {"description": "The authenticated user is not a partner admin or lacks a linked partner."},
+        },
+        tags=["Partner Management"],
+    )
+    def post(self, request):
+        partner = get_partner_from_user(request.user)
+        if partner is None:
+            return Response(
+                {"detail": "This account is not linked to a partner."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = PartnerPasswordConfirmSerializer(
+            data=request.data, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+
+        return Response({"api_key": partner.api_key}, status=status.HTTP_200_OK)
+
+
+class PartnerAPIKeyRegenerateView(APIView):
+    """
+    POST /partner/api-key/regenerate/
+    Confirms the caller's password, then ROTATES the partner's api_key.
+    The previous key is invalidated immediately — any other admin session,
+    end-user portal, or integration still using the old key will start
+    getting 401s from PartnerScopeMiddleware on their next request. This
+    is a deliberate, disruptive action — only use when the key is
+    suspected compromised, not for routine retrieval.
+    """
+    permission_classes = [IsPartnerAdmin]
+    throttle_classes = [PartnerRateThrottle]
+
+    @extend_schema(
+        summary="Regenerate Partner API Key",
+        description=(
+            "Rotates the authenticated partner's api_key (X-Partner-Key) after "
+            "confirming the caller's password. The previous key stops working "
+            "immediately — every other admin session, end-user portal, or "
+            "integration currently using the old key will be locked out until "
+            "reconfigured with the new one. Use only when the key is compromised "
+            "or as a deliberate security rotation, not for routine retrieval."
+        ),
+        request=PartnerPasswordConfirmSerializer,
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "api_key": {"type": "string", "description": "New key. Shown once only."},
+                    "warning": {"type": "string"},
+                }
+            },
+            400: {"description": "Missing or incorrect password."},
+            403: {"description": "The authenticated user is not a partner admin or lacks a linked partner."},
+        },
+        tags=["Partner Management"],
+    )
+    def post(self, request):
+        partner = get_partner_from_user(request.user)
+        if partner is None:
+            return Response(
+                {"detail": "This account is not linked to a partner."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = PartnerPasswordConfirmSerializer(
+            data=request.data, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+
+        partner.api_key = secrets.token_urlsafe(32)
+        partner.save(update_fields=["api_key"])
+
         return Response(
             {
-                "tokens": tokens,
-                "role": user.role,
-                "email": user.email,
-                "first_name": user.first_name,
+                "api_key": partner.api_key,
+                "warning": (
+                    "This key will not be shown again. The previous key is now invalid — "
+                    "update any other integrations (end-user portal, other admin sessions) "
+                    "with this new key."
+                ),
             },
             status=status.HTTP_200_OK,
         )
 
 
 # Token Refresh
-class TokenRefreshView(APIView):
-    """Generates standard access tokens via valid refresh lifecycles."""
 
+class TokenRefreshView(APIView):
+    """
+    IPRateThrottle: token refresh can also be abused for token farming.
+    """
     permission_classes = [AllowAny]
     throttle_classes = [IPRateThrottle]
 
@@ -956,88 +1111,60 @@ class StaffDistributorAccessView(APIView):
                 id=provider_id, partner_type="provider"
             )
         except Partner.DoesNotExist:
-            return Response(
-                {"error": "Partner not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+            return Response({"error": "Partner not found."}, status=404)
 
-        plan = None
-        if scope == "plan":
-            try:
-                plan = InsurancePlan.objects.get(id=plan_id, provider=provider)
-            except InsurancePlan.DoesNotExist:
-                return Response(
-                    {"error": "Plan not found for this provider."},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-
-        try:
-            grant = DistributorAccessGrant.objects.grant_directly(
-                distributor=distributor,
-                provider=provider,
-                scope=scope,
-                plan=plan,
-                by=request.user,
-            )
-        except ValidationError as e:
-            return Response(
-                {"error": str(e)}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        return Response(
-            {
-                "message": f"Access granted: {distributor.name} → {provider.name}",
-                "scope": grant.scope,
-                "status": grant.status,
-            },
-            status=status.HTTP_201_CREATED,
+        access, created = DistributorProviderAccess.objects.get_or_create(
+            distributor=distributor,
+            provider=provider,
+            defaults={"status": "approved", "is_active": True},
         )
 
-    def patch(self, request, grant_id):
-        """Update or terminate authorization mapping configurations manually."""
-        from plans.models import DistributorAccessGrant
+        if not created:
+            access.status = "approved"
+            access.is_active = True
+            access.save(update_fields=["status", "is_active"])
+
+        return Response({
+            "message": f"Access granted: {distributor.name} → {provider.name}",
+            "created": created,
+        }, status=201)
+    
+    @extend_schema(
+        summary="Revoke Distributor-Provider Access Line",
+        description="Disables systemic relationship cross-lines between downstream insurance 'distributors' and core policy 'providers'. Logs out active synchronization lines.",
+        request={
+            "application/json": {
+                "type": "object",
+                "required": ["distributor_id", "provider_id"],
+                "properties": {
+                    "distributor_id": {"type": "string", "format": "uuid"},
+                    "provider_id": {"type": "string", "format": "uuid"}
+                }
+            }
+        },
+        responses={
+            200: {"type": "object", "properties": {"message": {"type": "string"}}},
+            404: {"description": "Access relationship record not found."}
+        },
+        tags=["Staff Administration Operations"]
+    )
+    def delete(self, request):
+        from plans.models import DistributorProviderAccess
+
+        distributor_id = request.data.get("distributor_id")
+        provider_id = request.data.get("provider_id")
 
         try:
-            grant = DistributorAccessGrant.objects.get(id=grant_id)
-        except DistributorAccessGrant.DoesNotExist:
-            return Response(
-                {"error": "Access grant not found."},
-                status=status.HTTP_404_NOT_FOUND,
+            access = DistributorProviderAccess.objects.get(
+                distributor__id=distributor_id,
+                provider__id=provider_id,
             )
-
-        action = request.data.get("action")
-        note = request.data.get("note", "")
-
-        try:
-            if action == "approve":
-                DistributorAccessGrant.objects.approve(grant, by=request.user)
-            elif action == "reject":
-                DistributorAccessGrant.objects.reject(
-                    grant, by=request.user, note=note
-                )
-            elif action == "revoke":
-                DistributorAccessGrant.objects.revoke(grant, by=request.user)
-            else:
-                return Response(
-                    {
-                        "error": (
-                            "action must be 'approve', 'reject', or 'revoke'."
-                        )
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        except ValidationError as e:
-            return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
-
-        return Response(
-            {
-                "message": f"Access grant {grant.status}.",
-                "distributor": grant.distributor.name,
-                "provider": grant.provider.name,
-                "scope": grant.scope,
-            },
-            status=status.HTTP_200_OK,
-        )
+            access.is_active = False
+            access.status = "rejected"
+            access.save(update_fields=["is_active", "status"])
+            return Response({"message": "Access revoked."})
+        except DistributorProviderAccess.DoesNotExist:
+            return Response({"error": "Access record not found."}, status=404)
 
 
 class StaffServiceAccountCreateView(APIView):

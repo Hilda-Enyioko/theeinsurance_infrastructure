@@ -40,6 +40,7 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost').split(',')
 # Application definition
 
 INSTALLED_APPS = [
+    'django.contrib.staticfiles',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -53,7 +54,6 @@ INSTALLED_APPS = [
     'drf_spectacular_sidecar',
     'cloudinary_storage',
     'cloudinary',
-    'django.contrib.staticfiles',
 
     # local apps
     'accounts',
@@ -107,7 +107,7 @@ DATABASES = {
     #     'ENGINE': 'django.db.backends.sqlite3',
     #     'NAME': BASE_DIR / 'db.sqlite3',
     # }
-        "default": dj_database_url.parse(
+    "default": dj_database_url.parse(
         os.getenv("DATABASE_URL"),
         conn_max_age=600,
         conn_health_checks=True,
@@ -153,6 +153,27 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# Legacy setting explicit defined for compatibility with django-cloudinary-storage on Django 4.2+ / 5.0+ / 6.0+
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
+
+STORAGES = {
+    "default": {
+        "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
+    },
+}
+
+CLOUDINARY_STORAGE = {
+    "CLOUD_NAME": os.getenv("CLOUDINARY_CLOUD_NAME"),
+    "API_KEY": os.getenv("CLOUDINARY_API_KEY"),
+    "API_SECRET": os.getenv("CLOUDINARY_API_SECRET"),
+}
+
 # Django REST Framework configuration
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -182,7 +203,9 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://mock-insurance-customer-portal.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://theeinsurance-portal.vercel.app",
 ]
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
@@ -192,17 +215,6 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 CORS_ALLOW_CREDENTIALS = True
 
 AUTH_USER_MODEL = "accounts.CustomUser"
-
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
-
-CLOUDINARY_STORAGE = {
-    "CLOUD_NAME": os.getenv("CLOUDINARY_CLOUD_NAME"),
-    "API_KEY": os.getenv("CLOUDINARY_API_KEY"),
-    "API_SECRET": os.getenv("CLOUDINARY_API_SECRET"),
-}
-
-DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
 
 # CACHE CONFIGURATION
 # Dev: LocMemCache (default, no setup needed)
@@ -235,6 +247,7 @@ NOMBA_CLIENT_SECRET   = config("NOMBA_CLIENT_SECRET")
 NOMBA_ACCOUNT_ID      = config("NOMBA_ACCOUNT_ID")
 NOMBA_SUB_ACCOUNT_ID  = config("NOMBA_SUB_ACCOUNT_ID")
 NOMBA_CALLBACK_URL    = config("NOMBA_CALLBACK_URL")
+NOMBA_SIGNATURE_KEY   = config("NOMBA_SIGNATURE_KEY")
 
 # Payment webhook
 N8N_WEBHOOK_PAYMENT_URL = config("N8N_WEBHOOK_PAYMENT_URL")
@@ -275,33 +288,3 @@ SPECTACULAR_SETTINGS = {
         "CustomerKYCTypeEnum": "accounts.models.CustomerKYC.ID_TYPE_CHOICES",
     },
 }
-
-STORAGES = {
-    "default": {
-        "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
-    },
-    "staticfiles": {
-        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
-    },
-}
-
-# Legacy alias — required because django-cloudinary-storage's collectstatic
-# override reads STATICFILES_STORAGE directly instead of STORAGES["staticfiles"]
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
-
-WHITENOISE_MANIFEST_STRICT = False
-
-# settings.py
-import sentry_sdk
-from sentry_sdk.integrations.django import DjangoIntegration
-
-sentry_sdk.init(
-    dsn=config("SENTRY_DSN"),
-    integrations=[DjangoIntegration()],
-    traces_sample_rate=1.0,
-    profiles_sample_rate=1.0,
-    send_default_pii=False,
-)
-
-# Google AI
-GOOGLE_AI_API_KEY = config("GOOGLE_AI_API_KEY")

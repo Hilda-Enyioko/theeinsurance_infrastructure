@@ -29,7 +29,18 @@ class Partner(models.Model):
     
     partner_type = models.CharField(max_length=20, choices=PARTNER_TYPE_CHOICES)
     is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    nomba_account_id = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        default=None,
+        unique=True,
+        help_text=(
+            "Nomba sub-account ID for payout settlement. Leave blank if this "
+            "partner doesn't have one — they'll default to Interswitch checkout."
+        ),
+    )
 
     def __str__(self):
         return str(self.name)
@@ -40,16 +51,8 @@ class Partner(models.Model):
         return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
     def save(self, *args, **kwargs):
-        """Custom hook to safely initialize secure hash tokens if not present."""
-        if not self.api_key_hash:
-            # Generate a temporary raw secret string
-            raw_key = f"pk_{secrets.token_urlsafe(32)}"
-            self.api_key_hash = self.hash_key(raw_key)
-            
-            # CRITICAL: Expose raw_key to runtime context ONCE during creation 
-            # so views can display it to the user.
-            setattr(self, "_raw_api_key", raw_key)
-            
+        if not self.api_key:
+            self.api_key = secrets.token_urlsafe(32)
         super().save(*args, **kwargs)
 
 

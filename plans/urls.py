@@ -5,9 +5,10 @@ from .views import (
     InsurancePlanDetailView,
     ProviderPlanListCreateView,
     ProviderPlanDetailView,
-    ProviderAccessRequestListView,
-    DistributorAccessGrantView,
-    DistributorAccessGrantWithdrawView,
+    DistributorProviderAccessView,
+    DistributorAccessRequestView,
+    DistributorProviderBrowseView,
+    DistributorPlanBrowseView,
     PlanRecommendationView,
     PlanContextView,
 )
@@ -25,7 +26,9 @@ urlpatterns = [
     path("partner/plans/<uuid:plan_id>/", ProviderPlanDetailView.as_view(), name="provider-plan-detail"),
     path("partner/access-requests/", ProviderAccessRequestListView.as_view(), name="provider-access-requests"),
 
-    # distributor team
-    path("partner/access-grants/", DistributorAccessGrantView.as_view(), name="distributor-access-grants"),
-    path("partner/access-grants/<uuid:grant_id>/withdraw/", DistributorAccessGrantWithdrawView.as_view(), name="distributor-access-grant-withdraw"),
+    # distributor
+    path("partner/providers/", DistributorProviderAccessView.as_view(), name="distributor-provider-access"),
+    path("partner/providers/browse/", DistributorProviderBrowseView.as_view(), name="distributor-provider-browse"),
+    path("partner/providers/plans/", DistributorPlanBrowseView.as_view(), name="distributor-plan-browse"),
+    path("partner/providers/request-access/", DistributorAccessRequestView.as_view(), name="distributor-access-request"),
 ]

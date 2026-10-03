@@ -16,8 +16,9 @@ import requests
 from django.conf import settings
 from django.db import transaction as db_transaction
 from django.utils import timezone
-from datetime import timedelta
-import sentry_sdk
+from django.db.models import Q
+from drf_spectacular.utils import extend_schema_field
+from rest_framework import serializers
 
 from .models import CallbackLog, Transaction
 from core.nomba_auth import get_nomba_token, NombaAuthError    # noqa: E402
@@ -74,6 +75,26 @@ def _build_redirect_url(transaction: Transaction) -> str:
 def _get_service_webhook_url(event: str) -> str | None:
     endpoint = ServiceWebhookEndpoint.objects.filter(event=event, is_active=True).first()
     return endpoint.url if endpoint else None
+
+# Check Nomba gateway eligibility
+@extend_schema_field(serializers.BooleanField())
+def nomba_payment_available(sub) -> bool:
+    """
+    Informational only — no longer used to gate whether Nomba can be used
+    as the payment gateway (see _build_nomba_split for the actual behavior
+    when a provider/distributor Nomba account is missing).
+
+    True only if every party that needs a payout for this subscription
+    (the provider, and the distributor if one is involved) has a Nomba
+    sub-account on file. Kept around for the frontend to optionally show
+    "split payout will apply" vs. "full amount settles to platform"
+    messaging — it no longer blocks checkout or renewal.
+    """
+    if not sub.provider.nomba_account_id:
+        return False
+    if sub.distributor and not sub.distributor.nomba_account_id:
+        return False
+    return True
 
 # --------------------------------------------------------------------------------------
 
@@ -151,8 +172,8 @@ def verify_nomba_signature(payload: dict, timestamp: str, signature_header: str)
 def _store_nomba_token(txn: Transaction, token_key: str) -> NombaTokenStore | None:
     """
     Persist Nomba card tokenization details for recurring charges.
-    
-    Validates that the customer explicitly consented to recurring charges 
+
+    Validates that the customer explicitly consented to recurring charges
     via the associated PolicySubscription before saving to the database.
     """
     try:
@@ -160,6 +181,12 @@ def _store_nomba_token(txn: Transaction, token_key: str) -> NombaTokenStore | No
     except AttributeError:
         logger.error("Transaction %s is not linked to a subscription.", txn.reference)
         return None
+    
+    logger.info(
+        "Subscription %s auto_charge_enabled=%s",
+        sub.id,
+        sub.auto_charge_enabled
+    )
 
     # Consent check
     if not sub.auto_charge_enabled:
@@ -186,7 +213,7 @@ def _store_nomba_token(txn: Transaction, token_key: str) -> NombaTokenStore | No
             "card_type": card_type,
             "card_pan": card_pan,
             "customer_consented_to_auto_charge": True,
-            "consent_recorded_at": sub.updated_at or timezone.now(),
+            "consent_recorded_at": timezone.now(),
             "nomba_order_reference": txn.gateway_reference or "",
         }
     )
@@ -198,6 +225,65 @@ def _store_nomba_token(txn: Transaction, token_key: str) -> NombaTokenStore | No
     return token_record
 # -----------------------------------------------------------------------------------
 
+
+# Payout Automated Splits
+# -----------------------------------------------------------------------------------
+def _build_nomba_split(sub, total_amount: Decimal) -> dict | None:
+    """
+    Build a Nomba splitRequest so TheeInsurance's own sub-account only ever
+    receives its platform fee — the provider (and distributor, if involved)
+    are paid out directly via the same transaction.
+
+    - Direct subscription (no distributor): 2-way split — platform, provider.
+    - Distributor-originated subscription:   3-way split — platform, distributor, provider.
+
+    If the provider (or distributor, when one is involved) has no Nomba
+    sub-account on file, there is no valid payee to split to. Rather than
+    blocking the charge, we return None so the caller omits splitRequest
+    entirely — Nomba then settles the full amount into TheeInsurance's own
+    platform account (settings.NOMBA_SUB_ACCOUNT_ID). This is a deliberate
+    fallback rather than a fallback to the Interswitch gateway.
+    """
+    provider_account = sub.provider.nomba_account_id
+    distributor_account = sub.distributor.nomba_account_id if sub.distributor else None
+
+    has_provider = bool(provider_account)
+    has_distributor = (not sub.distributor) or bool(distributor_account)
+
+    if not has_provider or not has_distributor:
+        logger.info(
+            "No complete Nomba split available for subscription %s "
+            "(provider_account_present=%s, distributor_account_present=%s) — "
+            "full amount will settle to the platform account, no split applied.",
+            sub.id, has_provider, has_distributor,
+        )
+        return None
+
+    platform_account = settings.NOMBA_SUB_ACCOUNT_ID
+    platform_cut = sub.platform_fee
+    distributor_cut = sub.distributor_commission  # Decimal('0.00') when no distributor
+    provider_cut = sub.provider_payout
+
+    if (platform_cut + distributor_cut + provider_cut) != total_amount:
+        raise PaymentError(
+            f"Split amounts don't sum to the charge amount for subscription {sub.id}."
+        )
+
+    split_list = [
+        {"accountId": platform_account, "value": f"{platform_cut:.2f}"},
+        {"accountId": provider_account, "value": f"{provider_cut:.2f}"},
+    ]
+    if sub.distributor:
+        split_list.append(
+            {"accountId": distributor_account, "value": f"{distributor_cut:.2f}"}
+        )
+
+    return {
+        "splitType": "AMOUNT",
+        "splitList": split_list,
+    }
+
+# -----------------------------------------------------------------------------------
 
 # Process Success Payments
 # -----------------------------------------------------------------------------------
@@ -239,10 +325,10 @@ def initiate_payment(transaction: Transaction) -> dict:
     Calls the Interswitch payment initiation endpoint and returns the
     payment URL that the frontend should redirect the user to.
     """
-    
+
     user = transaction.initiated_by
     customer_name = f"{user.first_name} {user.last_name}".strip()
-    
+
     payload = {
         "merchantCode": settings.INTERSWITCH_MERCHANT_CODE,
         "payableCode": settings.INTERSWITCH_PAYABLE_CODE,
@@ -293,6 +379,11 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
     want automated renewal charges. The partner passes consent explicitly;
     we refuse to tokenize without it.
 
+    Nomba is used regardless of whether the provider/distributor has a
+    Nomba sub-account on file — _build_nomba_split() below decides whether
+    to attach a splitRequest or let the full amount settle to TheeInsurance's
+    own platform account. There is no fallback to Interswitch here.
+
     Returns checkoutLink and orderReference for the partner to hand to
     their frontend.
     """
@@ -317,6 +408,16 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
         raise PaymentError(
             "Customer consent to automated charges is required to proceed."
         )
+    
+    sub.auto_charge_enabled = True
+    sub.save(update_fields=["auto_charge_enabled", "updated_at"])
+    
+    sub.refresh_from_db()
+    
+    logger.warning(
+        "Saved auto_charge_enabled=%s",
+        sub.auto_charge_enabled
+    )
 
     # 3. Create an internal Transaction record before calling Nomba
     with db_transaction.atomic():
@@ -347,6 +448,12 @@ def initiate_nomba_checkout(subscription_id: str, customer_consented: bool) -> d
         },
         "tokenizeCard": True,
     }
+
+    split = _build_nomba_split(sub, sub.plan.premium)
+    if split is not None:
+        order_payload["order"]["splitRequest"] = split
+    # else: no splitRequest key at all — full amount stays with our
+    # platform sub-account (settings.NOMBA_SUB_ACCOUNT_ID).
 
     # 5. Call Nomba
     try:
@@ -408,7 +515,7 @@ def verify_transaction(reference: str) -> dict:
     Called after redirect (user lands on callback URL) and optionally
     after receiving a webhook, as a second source of truth.
     """
-    
+
     try:
         response = requests.get(
             settings.INTERSWITCH_BASE_URL + f"/api/v2/purchases/{reference}",
@@ -430,21 +537,24 @@ def verify_nomba_transaction(order_reference: str) -> dict:
     """
     Query Nomba to verify the status of a checkout transaction by orderReference.
 
+    Uses /v1/transactions/accounts/single, which works in both sandbox and
+    production (unlike /v1/checkout/transaction, which is production-only
+    and has a different response shape with no top-level `status` field).
+
+    Nomba returns HTTP 200 even for "transaction not found" (code: "01",
+    data: null) rather than a 4xx/5xx — raise_for_status() alone won't catch
+    that, so we check `code` explicitly and raise PaymentError with the
+    actual description instead of silently returning an empty data dict.
+
     Called from NombaCallbackView when the customer lands on the redirect
     before the webhook has landed, as a second source of truth — mirrors
     verify_transaction() for Interswitch.
-
-    Note: Nomba's transaction verification endpoints are production-only;
-    this will not return meaningful data against sandbox credentials.
     """
     try:
         token = get_nomba_token()
         response = requests.get(
-            f"{settings.NOMBA_BASE_URL}/checkout/transaction",
-            params={
-                "idType": "ORDER_REFERENCE",
-                "id": order_reference,
-            },
+            f"{settings.NOMBA_BASE_URL}/transactions/accounts/single",
+            params={"orderReference": order_reference},
             headers={
                 "Authorization": f"Bearer {token}",
                 "accountId": settings.NOMBA_ACCOUNT_ID,
@@ -452,7 +562,7 @@ def verify_nomba_transaction(order_reference: str) -> dict:
             timeout=30,
         )
         response.raise_for_status()
-        return response.json()
+        result = response.json()
     except NombaAuthError as e:
         logger.error("Nomba auth failed during verification for order_ref %s: %s", order_reference, str(e))
         raise PaymentError("Could not authenticate with payment gateway.")
@@ -462,6 +572,16 @@ def verify_nomba_transaction(order_reference: str) -> dict:
     except requests.RequestException as e:
         logger.error("Nomba verification error for order_ref %s: %s", order_reference, str(e))
         raise PaymentError("Could not verify transaction with gateway.")
+
+    if result.get("code") != "00":
+        description = result.get("description", "Unknown error")
+        logger.warning(
+            "Nomba verification non-00 for order_ref %s: code=%s description=%s",
+            order_reference, result.get("code"), description,
+        )
+        raise PaymentError(f"Verification failed: {description}")
+
+    return result
 
 # --------------------------------------------------------------------------------------
 
@@ -547,28 +667,43 @@ def process_nomba_webhook(payload: dict, signature: str) -> CallbackLog:
     _process_successful_payment, then persists the Nomba tokenKey for
     future automated charges.
 
+    Transaction lookup uses data.order, not data.transaction:
+      - data.order.orderReference = OUR merchant reference (Transaction.reference)
+      - data.order.orderId        = NOMBA's own ID (Transaction.gateway_reference)
+    Same naming convention Nomba uses on the checkout redirect. data.transaction.merchantTxRef
+    is unreliable (empty/truncated in practice) and should not be used for lookup.
+
     Note: no amount-mismatch check here — Nomba's checkout flow doesn't
     carry the same amount-tampering surface as Interswitch's redirect flow.
     Revisit if that assumption changes.
     """
-    timestamp = payload.get("_nomba_timestamp", "")  # passed in by the view from the header
+    timestamp = payload.get("_nomba_timestamp", "")
     verify_nomba_signature(payload, timestamp, signature)
 
     data = payload.get("data", {})
     transaction = data.get("transaction", {})
+    order = data.get("order", {})
 
-    transaction_ref = transaction.get("merchantTxRef") or transaction.get("transactionId", "")
+    order_reference = order.get("orderReference", "")
+    order_id = order.get("orderId", "")
     response_code = transaction.get("responseCode", "")
     gateway_ref = transaction.get("transactionId", "")
     is_success = payload.get("event_type") == "payment_success"
 
     with db_transaction.atomic():
-        try:
-            txn = Transaction.objects.select_for_update().get(reference=transaction_ref)
-        except Transaction.DoesNotExist:
-            logger.warning("Nomba webhook received for unknown reference: %s", transaction_ref)
+        txn = (
+            Transaction.objects.select_for_update()
+            .filter(Q(reference=order_reference) | Q(gateway_reference=order_id))
+            .first()
+        )
+
+        if not txn:
+            logger.warning(
+                "Nomba webhook received for unknown order (orderReference=%s, orderId=%s)",
+                order_reference, order_id,
+            )
             return CallbackLog.objects.create(
-                transaction_reference=transaction_ref,
+                transaction_reference=order_reference or order_id,
                 raw_payload=payload,
                 response_code=response_code,
                 status=CallbackLog.Status.FLAGGED,
@@ -582,7 +717,7 @@ def process_nomba_webhook(payload: dict, signature: str) -> CallbackLog:
 
         if is_duplicate:
             return CallbackLog.objects.create(
-                transaction_reference=transaction_ref,
+                transaction_reference=txn.reference,
                 raw_payload=payload,
                 response_code=response_code,
                 status=CallbackLog.Status.FLAGGED,
@@ -595,8 +730,8 @@ def process_nomba_webhook(payload: dict, signature: str) -> CallbackLog:
         if is_success:
             log = _process_successful_payment(txn, gateway_ref, payload, gateway="nomba")
 
-            token_key = data.get("tokenKey") or transaction.get("tokenKey")
-            if token_key:
+            token_key = data.get("tokenizedCardData", {}).get("tokenKey") or data.get("tokenKey")
+            if token_key and token_key != "N/A":
                 _store_nomba_token(txn, token_key)
 
             return log
@@ -608,7 +743,7 @@ def process_nomba_webhook(payload: dict, signature: str) -> CallbackLog:
         txn.save(update_fields=["payment_status", "gateway_reference", "gateway_response", "updated_at"])
 
         return CallbackLog.objects.create(
-            transaction_reference=transaction_ref,
+            transaction_reference=txn.reference,
             raw_payload=payload,
             response_code=response_code,
             status=CallbackLog.Status.FAILED,
@@ -627,11 +762,27 @@ RENEWAL_IN_FLIGHT_TTL_MINUTES = 30
 
 def charge_policy_renewal(subscription_id: str) -> dict:
     """
-    ... (existing docstring, plus:)
+    Charge a policy renewal using a stored Nomba tokenized card.
 
-    Sentry note: this function is wrapped in a transaction span so the
-    row-lock wait time and the duplicate-guard outcome are both visible
-    in trace data — this is the evidence trail for the race-condition fix.
+    Called by:
+      - The renewal scheduler (Django management command or Celery beat)
+      - n8n via the service account endpoint on scheduled renewal dates
+      - Dunning retry attempts (n8n calls this again on day 1, 3, 7)
+
+    Flow:
+      1. Load the PolicySubscription and its NombaTokenStore
+      2. Guard against double-charging (idempotency at the DB level)
+      3. Create a new RENEWAL Transaction record
+      4. POST to Nomba /v1/checkout/tokenized-card-payment
+      5. On success  → activate/renew subscription, fire n8n payment.successful
+      6. On failure  → mark transaction FAILED, fire n8n charge.failed for dunning
+
+    Nomba is used regardless of whether the provider/distributor has a
+    Nomba sub-account on file — _build_nomba_split() decides whether to
+    attach a splitRequest or let the full amount settle to TheeInsurance's
+    own platform account. There is no fallback to Interswitch here.
+
+    Returns a dict with outcome details for the caller (n8n or scheduler).
     """
     from subscriptions.models import PolicySubscription, NombaTokenStore
 
@@ -694,34 +845,41 @@ def charge_policy_renewal(subscription_id: str) -> dict:
                     f"A renewal charge is already in progress for subscription {subscription_id}."
                 )
 
-            with sentry_sdk.start_span(op="db.create", description="create renewal transaction"):
-                txn = Transaction.objects.create(
-                    amount=sub.plan.premium,
-                    currency='NGN',
-                    initiated_by=sub.customer.user,
-                    subscription=sub,
-                    payment_type=Transaction.PAYMENT_TYPE.RENEWAL,
-                    payment_status=Transaction.PAYMENT_STATUS.PENDING,
-                    gateway=Transaction.GATEWAY.NOMBA,
-                )
-            sentry_txn.set_tag("transaction_ref", txn.reference)
+    # 6. Create the renewal Transaction record before calling Nomba
+    #    we have an audit trail even if the network call fails.
+    with db_transaction.atomic():
+        txn = Transaction.objects.create(
+            amount=sub.plan.premium,
+            currency='NGN',
+            initiated_by=sub.customer.user,
+            subscription=sub,
+            payment_type=Transaction.PAYMENT_TYPE.RENEWAL,
+            payment_status=Transaction.PAYMENT_STATUS.PENDING,
+            gateway=Transaction.GATEWAY.NOMBA,
+        )
 
-        # Lock released — Nomba call happens outside the transaction/span above.
-        charge_payload = {
-            "order": {
-                "orderReference": txn.reference,
-                "customerEmail":  sub.customer.user.email,
-                "amount":         float(sub.plan.premium),
-                "currency":       "NGN",
-                "accountId":      settings.NOMBA_SUB_ACCOUNT_ID,
-                "callbackUrl":    settings.NOMBA_CALLBACK_URL,
-                "orderMetaData": {
-                    "subscriptionId": str(sub.id),
-                    "chargeType":     "AUTO_RENEWAL",
-                },
+    # 7. Build Nomba tokenized charge payload
+    charge_payload = {
+        "order": {
+            "orderReference": txn.reference,
+            "customerEmail":  sub.customer.user.email,
+            "amount":         str(sub.plan.premium),
+            "currency":       "NGN",
+            "accountId":      settings.NOMBA_SUB_ACCOUNT_ID,
+            "callbackUrl":    settings.NOMBA_CALLBACK_URL,
+            "orderMetaData": {
+                "subscriptionId": str(sub.id),
+                "chargeType":     "AUTO_RENEWAL",
             },
-            "tokenKey": token_store.token_key,
-        }
+        },
+        "tokenKey": token_store.token_key,
+    }
+
+    split = _build_nomba_split(sub, sub.plan.premium)
+    if split is not None:
+        charge_payload["order"]["splitRequest"] = split
+    # else: no splitRequest key at all — full amount stays with our
+    # platform sub-account (settings.NOMBA_SUB_ACCOUNT_ID).
 
         with sentry_sdk.start_span(op="http.client", description="Nomba tokenized charge"):
             try:
@@ -931,7 +1089,7 @@ def _fire_n8n_dunning_webhook(txn: Transaction, error: str = "") -> None:
         "event":           "charge.failed",
         "transaction_ref": txn.reference,
         "subscription_id": str(sub.id),
-        "customer_email":  sub.customer.email if sub.customer else None,
+        "customer_email":  sub.customer.user.email if sub.customer else None,
         "amount":          str(txn.amount),
         "currency":        txn.currency,
         "failure_reason":  error or "unknown",
@@ -946,4 +1104,3 @@ def _fire_n8n_dunning_webhook(txn: Transaction, error: str = "") -> None:
     except requests.RequestException as e:
         logger.error("n8n dunning webhook failed for txn %s: %s", txn.reference, str(e))
 # -------------------------------------------------------------------------------------------
-

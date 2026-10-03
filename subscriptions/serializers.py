@@ -7,6 +7,11 @@ class PolicySubscriptionSerializer(serializers.ModelSerializer):
     provider_name = serializers.CharField(source='provider.name', read_only=True)
     distributor_name = serializers.CharField(source='distributor.name', read_only=True, default=None)
     customer_email = serializers.CharField(source='customer.user.email', read_only=True)
+    nomba_available = serializers.SerializerMethodField()
+    
+    def get_nomba_available(self, obj):
+        from payments.services import nomba_payment_available
+        return nomba_payment_available(obj)
     
     class Meta:
         model = PolicySubscription
@@ -20,6 +25,7 @@ class PolicySubscriptionSerializer(serializers.ModelSerializer):
             "distributor_commission", "platform_fee",
             "payment_reference", "payment_verified",
             "created_at", "updated_at", "auto_charge_enabled",
+            "nomba_available",
         ]
         read_only_fields = [
             "id", "customer", "provider", "distributor",

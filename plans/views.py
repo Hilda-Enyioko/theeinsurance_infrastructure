@@ -9,19 +9,35 @@ from drf_spectacular.utils import (
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
-from accounts.utils import get_partner_from_user, is_full_partner_admin
+from rest_framework.generics import ListAPIView
+from rest_framework import serializers, status
+from django.db.models import Q
+from drf_spectacular.utils import (
+    extend_schema,
+    OpenApiParameter,
+    OpenApiResponse,
+    extend_schema_view,
+    inline_serializer,
+)
+from drf_spectacular.types import OpenApiTypes
 
 from .models import InsuranceCategory, InsurancePlan, DistributorAccessGrant
 from .serializers import (
     InsuranceCategorySerializer,
     InsurancePlanSerializer,
     InsurancePlanCreateSerializer,
-    DistributorAccessGrantSerializer,
+    DistributorProviderAccessSerializer,
+    ProviderBrowseSerializer,
+    DistributorPlanBrowseSerializer,
     DistributorAccessRequestSerializer,
 )
-from accounts.permissions import IsProviderAdmin, IsDistributorAdmin, IsServiceAccount
-from core.models import Partner
+from accounts.permissions import (
+    IsProviderAdmin,
+    IsDistributorAdmin,
+    IsServiceAccount,
+)
 from core.throttles import PartnerRateThrottle
+from core.models import Partner
 
 
 # Helpers
@@ -164,7 +180,10 @@ class ProviderPlanListCreateView(APIView):
         parameters=[
             OpenApiParameter(name="status", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter by status: 'active' or 'inactive'"),
         ],
-        responses={200: OpenApiResponse(description="List of insurance plans for the authenticated provider.")}
+        responses={200: OpenApiResponse(
+            description="List of insurance plans for the authenticated provider."
+        )},
+        tags=["Insurance Plans"]
     )
     def get(self, request):
         partner = get_partner_from_user(request.user)
@@ -219,7 +238,8 @@ class ProviderPlanDetailView(APIView):
         responses={
             200: InsurancePlanSerializer,
             404: OpenApiResponse(description="Plan not found.")
-        }
+        },
+        tags=["Insurance Plans"]
     )
     def get(self, request, plan_id):
         partner = get_partner_from_user(request.user)
@@ -235,7 +255,8 @@ class ProviderPlanDetailView(APIView):
             200: InsurancePlanSerializer,
             400: OpenApiResponse(description="Validation error data."),
             404: OpenApiResponse(description="Plan not found.")
-        }
+        },
+        tags=["Insurance Plans"]
     )
     def patch(self, request, plan_id):
         if not is_full_partner_admin(request.user):
@@ -260,7 +281,8 @@ class ProviderPlanDetailView(APIView):
         responses={
             200: OpenApiResponse(description="Plan deactivated successfully."),
             404: OpenApiResponse(description="Plan not found.")
-        }
+        },
+        tags=["Insurance Plans"]
     )
     def delete(self, request, plan_id):
         if not is_full_partner_admin(request.user):
@@ -318,79 +340,149 @@ class DistributorAccessGrantView(APIView):
         tags=["Insurance Plans: Distributor Access"]
     )
     def get(self, request):
-        partner = get_partner_from_user(request.user)
-        grants = DistributorAccessGrant.objects.filter(
-            distributor=partner
-        ).select_related("provider", "plan").order_by("-requested_at")
+        distributor = request.user.partner_admin_profile.partner
+        status_filter = request.query_params.get("status", "approved")
 
-        status_filter = request.query_params.get("status")
-        if status_filter:
-            grants = grants.filter(status=status_filter)
-
-        serializer = DistributorAccessGrantSerializer(grants, many=True)
-        return Response({"access_grants": serializer.data})
-
-    def post(self, request):
-        if not is_full_partner_admin(request.user):
-            return Response({"error": "Only a partner_admin can request provider access."}, status=403)
-
-        partner = get_partner_from_user(request.user)
-        serializer = DistributorAccessRequestSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=400)
-
-        data = serializer.validated_data
-        try:
-            provider = Partner.objects.get(id=data["provider_id"], partner_type="provider")
-        except Partner.DoesNotExist:
-            return Response({"error": "Provider not found."}, status=404)
-
-        plan = None
-        if data["scope"] == "plan":
-            try:
-                plan = InsurancePlan.objects.get(id=data["plan_id"], provider=provider)
-            except InsurancePlan.DoesNotExist:
-                return Response({"error": "Plan not found for this provider."}, status=404)
-
-        try:
-            grant = DistributorAccessGrant.objects.request_access(
-                distributor=partner, provider=provider, scope=data["scope"], plan=plan
+        valid_statuses = {"pending", "approved", "rejected"}
+        if status_filter not in valid_statuses and status_filter != "all":
+            return Response(
+                {"detail": f"Invalid status filter. Choose from: {', '.join(valid_statuses)}, or 'all'."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        except ValidationError as e:
-            return Response({"error": str(e)}, status=400)
 
-        return Response(DistributorAccessGrantSerializer(grant).data, status=201)
+        qs = DistributorProviderAccess.objects.filter(
+            distributor=distributor
+        ).select_related("distributor", "provider")
+
+        if status_filter != "all":
+            qs = qs.filter(status=status_filter)
+
+        serializer = DistributorProviderAccessSerializer(qs, many=True)
+        return Response(serializer.data)
 
 
-class DistributorAccessGrantWithdrawView(APIView):
+@extend_schema_view(
+    get=extend_schema(
+        summary="Browse all providers",
+        description="Fetch all active providers hosted on the platform along with the current distributor's access status to each.",
+        responses={200: ProviderBrowseSerializer(many=True)},
+        tags=["Insurance Plans: Distributor Access"]
+    )
+)
+class DistributorProviderBrowseView(ListAPIView):
     """
-    Withdraws a still-pending request. Approved/rejected/revoked grants
-    can't be withdrawn this way — an approved grant must go through staff
-    revocation instead, preserving the audit trail. Ownership is enforced
-    via the distributor=partner filter in the lookup itself, so a
-    distributor can only ever withdraw its own organization's requests.
+    GET /partner/providers/browse/
+    All active providers hosted on the platform, with this distributor's
+    access status to each (not_requested / pending / approved / rejected).
     """
+
+    permission_classes = [IsDistributorAdmin]
+    throttle_classes = [PartnerRateThrottle]
+    serializer_class = ProviderBrowseSerializer
+
+    def get_queryset(self):
+        return Partner.objects.filter(partner_type="provider", is_active=True).order_by("name")
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["distributor"] = self.request.user.partner_admin_profile.partner
+        return context
+
+
+@extend_schema_view(
+    get=extend_schema(
+        summary="Browse all insurance plans",
+        description="Fetch all active plans across all providers, annotated with access_status. Results can be filtered by category or provider.",
+        parameters=[
+            OpenApiParameter(
+                name="category",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Filter plans by Category UUID",
+                required=False,
+            ),
+            OpenApiParameter(
+                name="provider",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Filter plans by Provider UUID",
+                required=False,
+            ),
+        ],
+        responses={200: DistributorPlanBrowseSerializer(many=True)},
+        tags=["Insurance Plans: Distributor Access"]
+    )
+)
+class DistributorPlanBrowseView(ListAPIView):
+    """
+    GET /partner/providers/plans/
+    All active plans across all providers, annotated with access_status.
+    Optional query params: ?category=<uuid>&provider=<uuid>
+    """
+
+    permission_classes = [IsDistributorAdmin]
+    throttle_classes = [PartnerRateThrottle]
+    serializer_class = DistributorPlanBrowseSerializer
+
+    def get_queryset(self):
+        qs = InsurancePlan.objects.filter(is_active=True).select_related("provider", "category")
+        category = self.request.query_params.get("category")
+        provider = self.request.query_params.get("provider")
+        if category:
+            qs = qs.filter(category_id=category)
+        if provider:
+            qs = qs.filter(provider_id=provider)
+        return qs
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["distributor"] = self.request.user.partner_admin_profile.partner
+        return context
+
+
+class DistributorAccessRequestView(APIView):
+    """
+    POST /partner/providers/request-access/
+    Body: {"provider": "<provider-uuid>"}
+    Creates a pending DistributorProviderAccess request.
+    """
+
     permission_classes = [IsDistributorAdmin]
     throttle_classes = [PartnerRateThrottle]
 
-    def post(self, request, grant_id):
-        if not is_full_partner_admin(request.user):
-            return Response(
-                {"error": "Only a partner_admin can withdraw a request."}, status=403
+    @extend_schema(
+        summary="Request access to a provider",
+        description="Creates a new pending access request for the distributor to access a specific provider's data/plans.",
+        request=DistributorAccessRequestSerializer,
+        responses={
+            201: inline_serializer(
+                name="DistributorAccessRequestResponse",
+                fields={
+                    "provider": serializers.CharField(help_text="Name of the provider"),
+                    "status": serializers.CharField(help_text="Current status of the request (e.g., pending)"),
+                    "granted_at": serializers.DateTimeField(
+                        help_text="Timestamp when access was granted, if applicable", allow_null=True
+                    ),
+                },
             )
-
-        partner = get_partner_from_user(request.user)
-        try:
-            grant = DistributorAccessGrant.objects.get(id=grant_id, distributor=partner)
-        except DistributorAccessGrant.DoesNotExist:
-            return Response({"error": "Access request not found."}, status=404)
-
-        try:
-            DistributorAccessGrant.objects.withdraw(grant, by=request.user)
-        except ValidationError as e:
-            return Response({"error": str(e)}, status=400)
-
-        return Response({"message": "Access request withdrawn."})
+        },
+        tags=["Insurance Plans: Distributor Access"]
+    )
+    def post(self, request):
+        serializer = DistributorAccessRequestSerializer(
+            data=request.data,
+            context={"distributor": request.user.partner_admin_profile.partner},
+        )
+        serializer.is_valid(raise_exception=True)
+        access = serializer.save()
+        return Response(
+            {
+                "provider": access.provider.name,
+                "status": access.status,
+                "granted_at": access.granted_at,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 # AI / Automation — Internal Service Endpoints
