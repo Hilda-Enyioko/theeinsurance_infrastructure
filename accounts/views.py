@@ -60,6 +60,7 @@ from .serializers import (
     PartnerKYCSerializer,
     PartnerMeSerializer,
     PartnerPasswordConfirmSerializer,
+    PartnerOnboardingSerializer,
 )
 
 

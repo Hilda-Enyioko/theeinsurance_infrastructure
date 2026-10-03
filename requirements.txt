@@ -12,8 +12,8 @@ django-cloudinary-storage==0.3.0
 django-cors-headers==4.9.0
 django-stubs==6.0.5
 django-stubs-ext==6.0.5
-djangorestframework==3.17.1
-djangorestframework-stubs==3.17.0
+djangorestframework==3.16.0
+djangorestframework==3.16.0
 djangorestframework_simplejwt==5.5.1
 drf-spectacular==0.29.0
 drf-spectacular-sidecar==2026.6.1

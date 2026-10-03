@@ -1,9 +1,6 @@
 from rest_framework import serializers
-from drf_spectacular.utils import extend_schema_field
-from .models import InsuranceCategory, InsurancePlan, DistributorProviderAccess
-from core.models import Partner
+from .models import InsuranceCategory, InsurancePlan, DistributorAccessGrant
 
-ACCESS_STATUS_CHOICES = ["not_requested", "pending", "approved", "rejected"]
 
 # Insurance Category Serializer
 class InsuranceCategorySerializer(serializers.ModelSerializer):
@@ -51,8 +48,11 @@ class InsurancePlanCreateSerializer(serializers.ModelSerializer):
 
         if category.name == "travel":
             attrs["coverage_level"] = "standard"
-
-        if category.name == "motor":
+        elif category.name == "motor":
+            # Fixed: these keys must match InsurancePlan.COVERAGE_LEVELS exactly —
+            # the previous list used "third_party_fire_theft", which never
+            # matched the model's actual "tp_fire_theft" key, so this
+            # validation silently never fired.
             motor_levels = ["third_party", "tp_fire_theft", "comprehensive"]
             if coverage_level not in motor_levels:
                 raise serializers.ValidationError({
@@ -81,78 +81,33 @@ class DistributorAccessGrantSerializer(serializers.ModelSerializer):
         fields = [
             "id", "distributor", "distributor_name",
             "provider", "provider_name",
-            "status", "is_active", "granted_at", "reviewed_at",
+            "plan", "plan_name", "scope", "status",
+            "requested_at", "reviewed_by_email", "reviewed_at", "review_note",
         ]
-        read_only_fields = ["id", "distributor", "status", "granted_at", "reviewed_at"]
+        read_only_fields = fields
 
-class ProviderBrowseSerializer(serializers.ModelSerializer):
-    """
-    Read-only view of a provider, for the
-    distributor 'browse providers' list.
-    """
-    access_status = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Partner
-        fields = ["id", "name", "slug", "access_status"]
-
-    @extend_schema_field(
-        serializers.ChoiceField(choices=ACCESS_STATUS_CHOICES)
-    )
-    def get_access_status(self, obj):
-        distributor = self.context["distributor"]
-        access = DistributorProviderAccess.objects.filter(
-            distributor=distributor, provider=obj
-        ).first()
-        if not access:
-            return "not_requested"
-        return access.status
-
-
-class DistributorPlanBrowseSerializer(InsurancePlanSerializer):
-    """
-    Plans list for distributors, annotated with 
-    this distributor's access status to the plan's 
-    provider.
-    """
-    access_status = serializers.SerializerMethodField()
-
-    class Meta(InsurancePlanSerializer.Meta):
-        fields = InsurancePlanSerializer.Meta.fields + ["access_status"]
-
-    @extend_schema_field(
-        serializers.ChoiceField(choices=ACCESS_STATUS_CHOICES)
-    )
-    def get_access_status(self, obj):
-        distributor = self.context["distributor"]
-        access = DistributorProviderAccess.objects.filter(
-            distributor=distributor, provider=obj.provider
-        ).first()
-        return access.status if access else "not_requested"
+    def get_reviewed_by_email(self, obj):
+        return obj.reviewed_by.email if obj.reviewed_by_id else None
 
 
 class DistributorAccessRequestSerializer(serializers.Serializer):
-    provider = serializers.PrimaryKeyRelatedField(
-        queryset=Partner.objects.filter(partner_type="provider", is_active=True)
-    )
+    """
+    Distributor-initiated request — 4.4 (Provider-Level / Plan-Level
+    Access). The distributor is always taken from request context, never
+    from the request body, so a distributor can't request access on
+    another org's behalf.
+    """
+    provider_id = serializers.UUIDField()
+    scope = serializers.ChoiceField(choices=DistributorAccessGrant.SCOPE_CHOICES)
+    plan_id = serializers.UUIDField(required=False, allow_null=True)
 
-    def validate_provider(self, value):
-        distributor = self.context["distributor"]
-        existing = DistributorProviderAccess.objects.filter(
-            distributor=distributor, provider=value
-        ).first()
-        if existing and existing.status == "approved":
-            raise serializers.ValidationError("Access already approved for this provider.")
-        if existing and existing.status == "pending":
-            raise serializers.ValidationError("A request for this provider is already pending.")
-        return value
-
-    def create(self, validated_data):
-        distributor = self.context["distributor"]
-        provider = validated_data["provider"]
-        access, _ = DistributorProviderAccess.objects.update_or_create(
-            distributor=distributor,
-            provider=provider,
-            defaults={"status": "pending", "is_active": False},
-        )
-        return access
+    def validate(self, attrs):
+        if attrs["scope"] == "plan" and not attrs.get("plan_id"):
+            raise serializers.ValidationError(
+                {"plan_id": "plan_id is required when scope='plan'."}
+            )
+        if attrs["scope"] == "provider" and attrs.get("plan_id"):
+            raise serializers.ValidationError(
+                {"plan_id": "plan_id must not be set when scope='provider'."}
+            )
+        return attrs

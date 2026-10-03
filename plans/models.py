@@ -110,13 +110,100 @@ class InsurancePlan(models.Model):
         return f"{self.name} - {self.provider.name}"
 
 
-# ---Distributor Access---
+# Distributor Access Grant
 
-class DistributorProviderAccess(models.Model):
+class DistributorAccessGrantManager(models.Manager):
+    def request_access(self, *, distributor: Partner, provider: Partner, scope: str, plan: "InsurancePlan | None" = None):
+        if distributor.partner_type != "distributor":
+            raise ValidationError("distributor must be a Partner of type 'distributor'.")
+        if provider.partner_type != "provider":
+            raise ValidationError("provider must be a Partner of type 'provider'.")
+        if scope == "plan" and plan is None:
+            raise ValidationError("plan is required for a plan-level access request.")
+        if scope == "provider" and plan is not None:
+            raise ValidationError("plan must not be set for a provider-level access request.")
+        if plan is not None and plan.provider_id != provider.id:
+            raise ValidationError("plan does not belong to the specified provider.")
+        if plan is not None and plan.visibility == "private":
+            raise ValidationError("Cannot request access to a Private plan.")
+
+        lookup = dict(distributor=distributor, provider=provider, scope=scope, plan=plan)
+        existing = self.filter(**lookup).first()
+        if existing:
+            if existing.status == "approved":
+                return existing  # already granted, no-op
+            existing.status = "pending"
+            existing.reviewed_by = None
+            existing.reviewed_at = None
+            existing.save(update_fields=["status", "reviewed_by", "reviewed_at"])
+            return existing
+
+        return self.create(**lookup, status="pending")
+
+    def grant_directly(self, *, distributor: Partner, provider: Partner, scope: str, plan=None, by):
+        """Provider proactively shares access (BR-002 'Shared') without the
+        distributor requesting first — skips the pending state."""
+        grant = self.request_access(distributor=distributor, provider=provider, scope=scope, plan=plan)
+        return self.approve(grant, by=by)
+
+    def approve(self, grant: "DistributorAccessGrant", *, by):
+        if getattr(by, "role", None) not in ("super_admin", "support_admin"):
+            raise ValidationError("Only platform staff can approve distributor access requests.")
+        grant.status = "approved"
+        grant.reviewed_by = by
+        grant.reviewed_at = timezone.now()
+        grant.save(update_fields=["status", "reviewed_by", "reviewed_at"])
+        return grant
+
+    def reject(self, grant: "DistributorAccessGrant", *, by, note: str = ""):
+        if getattr(by, "role", None) not in ("super_admin", "support_admin"):
+            raise ValidationError("Only platform staff can reject distributor access requests.")
+        grant.status = "rejected"
+        grant.reviewed_by = by
+        grant.reviewed_at = timezone.now()
+        grant.review_note = note
+        grant.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_note"])
+        return grant
+
+    def revoke(self, grant: "DistributorAccessGrant", *, by):
+        if getattr(by, "role", None) not in ("super_admin", "support_admin"):
+            raise ValidationError("Only platform staff can revoke distributor access.")
+        grant.status = "revoked"
+        grant.reviewed_by = by
+        grant.reviewed_at = timezone.now()
+        grant.save(update_fields=["status", "reviewed_by", "reviewed_at"])
+        return grant
+    
+    def withdraw(self, grant: "DistributorAccessGrant"):
+        """
+        Distributor-initiated — not a staff action, unlike approve/reject/
+        revoke. Only a still-pending request can be withdrawn; anything
+        already decided (approved/rejected) must go through staff revocation
+        instead, preserving that decision's audit trail. The row is kept so 
+        the review history, and request_access() will happily reuse this row 
+        and flip it back to 'pending' if the distributor requests the same 
+        access again later.
+        """
+        if grant.status != "pending":
+            raise ValidationError(
+                f"Only a pending request can be withdrawn (current status: {grant.status})."
+            )
+        grant.status = "withdrawn"
+        grant.save(update_fields=["status"])
+        return grant
+
+
+class DistributorAccessGrant(models.Model):
+    SCOPE_CHOICES = [
+        ("provider", "Provider-Level"),
+        ("plan", "Plan-Level"),
+    ]
     STATUS_CHOICES = [
         ("pending", "Pending"),
         ("approved", "Approved"),
         ("rejected", "Rejected"),
+        ("revoked", "Revoked"),      
+        ("withdrawn", "Withdrawn"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -132,10 +219,24 @@ class DistributorProviderAccess(models.Model):
         related_name="granted_distributor_access",
         limit_choices_to={"partner_type": "provider"},
     )
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
-    is_active = models.BooleanField(default=True)
-    granted_at = models.DateTimeField(auto_now_add=True)
+    plan = models.ForeignKey(
+        InsurancePlan,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="access_grants",
+        help_text="Null for provider-level grants; set for plan-level grants.",
+    )
+    scope = models.CharField(max_length=10, choices=SCOPE_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending", db_index=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    reviewed_by = models.ForeignKey(
+        "accounts.CustomUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
     reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_note = models.TextField(blank=True)
+
+    objects = DistributorAccessGrantManager()
 
     class Meta:
         constraints = [
@@ -167,4 +268,5 @@ class DistributorProviderAccess(models.Model):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.distributor.name} → {self.provider.name} ({self.status})"
+        target = self.plan.name if self.plan_id else f"{self.provider.name} (all plans)"
+        return f"{self.distributor.name} → {target} [{self.status}]"
