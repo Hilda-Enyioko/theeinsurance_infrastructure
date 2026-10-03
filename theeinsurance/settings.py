@@ -40,6 +40,7 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost').split(',')
 # Application definition
 
 INSTALLED_APPS = [
+    'django.contrib.staticfiles',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -53,7 +54,6 @@ INSTALLED_APPS = [
     'drf_spectacular_sidecar',
     'cloudinary_storage',
     'cloudinary',
-    'django.contrib.staticfiles',
 
     # local apps
     'accounts',
