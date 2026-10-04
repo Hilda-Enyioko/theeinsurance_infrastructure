@@ -386,7 +386,7 @@ class DistributorAccessGrantWithdrawView(APIView):
             return Response({"error": "Access request not found."}, status=404)
 
         try:
-            DistributorAccessGrant.objects.withdraw(grant, by=request.user)
+            DistributorAccessGrant.objects.withdraw(grant)
         except ValidationError as e:
             return Response({"error": str(e)}, status=400)
 

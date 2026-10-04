@@ -119,3 +119,10 @@ class IsServiceAccount(BasePermission):
             and request.user.is_authenticated
             and getattr(request.user, "role", None) == "service_account"
         )
+
+
+class IsHumanStaff(BasePermission):
+    """super_admin or support_admin, never a service account."""
+    def has_permission(self, request, view):
+        u = request.user
+        return bool(u and u.is_authenticated and u.role in ("super_admin", "support_admin"))

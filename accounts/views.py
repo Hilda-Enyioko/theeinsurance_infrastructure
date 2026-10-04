@@ -1,68 +1,55 @@
-"""Authentication, KYC, and Core System Administration Views.
+"""Authentication, KYC, and Core System Administration Views."""
 
-This module handles authentication, onboarding, KYC processing, team
-management, and service account tokens for the insurance platform.
-"""
-
-from datetime import timedelta
 import secrets
+from datetime import timedelta
 
 from django.contrib.auth import authenticate
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from drf_spectacular.utils import (
-    OpenApiParameter,
-    OpenApiTypes,
-    extend_schema,
+    OpenApiParameter, OpenApiResponse, OpenApiTypes, extend_schema,
 )
 from rest_framework import status
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt import tokens as jwt_tokens
 from rest_framework_simplejwt.exceptions import TokenError
-from django.contrib.auth import authenticate
-from django.utils import timezone
-from datetime import timedelta
-from drf_spectacular.utils import (
-    extend_schema,
-    OpenApiParameter,
-    OpenApiTypes,
-    OpenApiResponse,
-)
 
 from accounts.permissions import (
-    IsCustomer,
-    IsPartnerAdmin,
-    IsStaffMember,
-    IsSuperAdmin,
+    IsCustomer, IsHumanStaff, IsPartnerAdmin, IsStaffMember, IsSuperAdmin,
 )
+from accounts.utils import get_partner_from_user, is_full_partner_admin
 from core.models import Partner
 from core.throttles import IPRateThrottle, PartnerRateThrottle
-from webhooks.services import dispatch_webhook
+from webhooks.events import E
+from webhooks.services import emit
 
 from .models import (
-    CustomerProfile,
-    CustomUser,
-    PartnerAdmin,
-    PartnerKYC,
-    ServiceAccountCredential,
-    Staff,
-    StaffLoginEvent,
+    CustomerProfile, CustomUser, PartnerAdmin, PartnerKYC,
+    ServiceAccountCredential, Staff, StaffLoginEvent,
 )
 from .serializers import (
-    CustomerKYCSerializer,
-    CustomerRegistrationSerializer,
-    LoginSerializer,
-    PartnerKYCSerializer,
-    PartnerMeSerializer,
-    PartnerPasswordConfirmSerializer,
-    PartnerOnboardingSerializer,
+    CustomerKYCSerializer, CustomerRegistrationSerializer, LoginSerializer,
+    PartnerKYCSerializer, PartnerMeSerializer, PartnerOnboardingSerializer,
+    PartnerPasswordConfirmSerializer, PartnerTeamInviteSerializer,
+    PartnerTeamMemberSerializer, StaffCreateSerializer, StaffSerializer,
 )
 
+
+def generate_tokens(user, partner_id=None):
+    refresh = jwt_tokens.RefreshToken.for_user(user)
+    refresh["role"] = user.role
+    if partner_id:
+        refresh["partner_id"] = str(partner_id)
+    return {"refresh": str(refresh), "access": str(refresh.access_token)}
+
+
+def _client_meta(request):
+    return {
+        "ip_address": request.META.get("REMOTE_ADDR"),
+        "user_agent": request.META.get("HTTP_USER_AGENT", "")[:255],
+    }
 
 # Helper functions
 
@@ -183,15 +170,9 @@ class PartnerKYCView(APIView):
         if serializer.is_valid():
             serializer.save(partner=partner)
 
-            dispatch_webhook(
-                partner,
-                "kyc.submitted",
-                {
-                    "partner_id": str(partner.id),
-                    "partner_name": partner.name,
-                    "partner_type": partner.partner_type,
-                },
-            )
+            emit(E.KYC_SUBMITTED, partner=partner, aggregate_id=partner.id,
+                data={"partner_id": str(partner.id), "partner_name": partner.name,
+                        "partner_type": partner.partner_type})
 
             return Response(
                 {
@@ -614,17 +595,21 @@ class PartnerAPIKeyRetrieveView(APIView):
     def post(self, request):
         partner = get_partner_from_user(request.user)
         if partner is None:
-            return Response(
-                {"detail": "This account is not linked to a partner."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            return Response({"detail": "This account is not linked to a partner."},
+                            status=status.HTTP_403_FORBIDDEN)
 
-        serializer = PartnerPasswordConfirmSerializer(
-            data=request.data, context={"request": request}
-        )
+        serializer = PartnerPasswordConfirmSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
 
-        return Response({"api_key": partner.api_key}, status=status.HTTP_200_OK)
+        raw = secrets.token_urlsafe(32)
+        partner.api_key_hash = Partner.hash_key(raw)
+        partner.save(update_fields=["api_key_hash"])
+
+        return Response({
+            "api_key": raw,
+            "warning": ("This key will not be shown again. The previous key is now invalid. "
+                        "Update every integration using the old key."),
+        }, status=status.HTTP_200_OK)
 
 
 class PartnerAPIKeyRegenerateView(APIView):
@@ -1037,17 +1022,11 @@ class StaffPartnerKYCReviewView(APIView):
             kyc.partner.is_active = True
             kyc.partner.save()
 
-        event = "kyc.approved" if action == "approve" else "kyc.rejected"
-        dispatch_webhook(
-            kyc.partner,
-            event,
-            {
-                "partner_id": str(kyc.partner.id),
-                "partner_name": kyc.partner.name,
-                "status": kyc.status,
-                "note": note,
-            },
-        )
+        event = E.KYC_APPROVED if action == "approve" else E.KYC_REJECTED
+        emit(event, partner=kyc.partner, aggregate_id=kyc.partner.id,
+             discriminator=kyc.reviewed_at.isoformat(),
+             data={"partner_id": str(kyc.partner.id), "partner_name": kyc.partner.name,
+                   "status": kyc.status, "note": note})
 
         return Response(
             {
@@ -1061,111 +1040,90 @@ class StaffPartnerKYCReviewView(APIView):
 
 # Staff — Distributor Access (provider-level and plan-level)
 class StaffDistributorAccessView(APIView):
-    """Processing distributor access (provider-level and plan-level)"""
-
-    permission_classes = [IsStaffMember]
+    permission_classes = [IsHumanStaff]
     throttle_classes = [PartnerRateThrottle]
 
     def get(self, request):
-        """Enumerate outstanding active authorization grant conditions across partners."""
         from plans.models import DistributorAccessGrant
-
         status_filter = request.query_params.get("status", "pending")
-        grants = DistributorAccessGrant.objects.filter(
-            status=status_filter
-        ).select_related("distributor", "provider", "plan")
-
-        data = [
-            {
-                "id": str(g.id),
-                "distributor": g.distributor.name,
-                "provider": g.provider.name,
-                "scope": g.scope,
-                "plan": g.plan.name if g.plan_id else None,
-                "status": g.status,
-                "requested_at": g.requested_at,
-            }
-            for g in grants
-        ]
+        grants = (DistributorAccessGrant.objects.filter(status=status_filter)
+                  .select_related("distributor", "provider", "plan"))
+        data = [{
+            "id": str(g.id), "distributor": g.distributor.name, "provider": g.provider.name,
+            "scope": g.scope, "plan": g.plan.name if g.plan_id else None,
+            "status": g.status, "requested_at": g.requested_at,
+        } for g in grants]
         return Response({"access_grants": data}, status=status.HTTP_200_OK)
 
     def post(self, request):
-        """Force provision a downstream shared risk deployment path directly."""
         from plans.models import DistributorAccessGrant, InsurancePlan
-
         distributor_id = request.data.get("distributor_id")
         provider_id = request.data.get("provider_id")
         scope = request.data.get("scope", "provider")
         plan_id = request.data.get("plan_id")
 
         if not distributor_id or not provider_id:
-            return Response(
-                {"error": "distributor_id and provider_id are required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+            return Response({"error": "distributor_id and provider_id are required."}, status=400)
+        if scope not in ("provider", "plan"):
+            return Response({"error": "scope must be 'provider' or 'plan'."}, status=400)
         try:
-            distributor = Partner.objects.get(
-                id=distributor_id, partner_type="distributor"
-            )
-            provider = Partner.objects.get(
-                id=provider_id, partner_type="provider"
-            )
+            distributor = Partner.objects.get(id=distributor_id, partner_type="distributor")
+            provider = Partner.objects.get(id=provider_id, partner_type="provider")
         except Partner.DoesNotExist:
             return Response({"error": "Partner not found."}, status=404)
 
-        access, created = DistributorProviderAccess.objects.get_or_create(
-            distributor=distributor,
-            provider=provider,
-            defaults={"status": "approved", "is_active": True},
-        )
-
-        if not created:
-            access.status = "approved"
-            access.is_active = True
-            access.save(update_fields=["status", "is_active"])
-
-        return Response({
-            "message": f"Access granted: {distributor.name} → {provider.name}",
-            "created": created,
-        }, status=201)
-    
-    @extend_schema(
-        summary="Revoke Distributor-Provider Access Line",
-        description="Disables systemic relationship cross-lines between downstream insurance 'distributors' and core policy 'providers'. Logs out active synchronization lines.",
-        request={
-            "application/json": {
-                "type": "object",
-                "required": ["distributor_id", "provider_id"],
-                "properties": {
-                    "distributor_id": {"type": "string", "format": "uuid"},
-                    "provider_id": {"type": "string", "format": "uuid"}
-                }
-            }
-        },
-        responses={
-            200: {"type": "object", "properties": {"message": {"type": "string"}}},
-            404: {"description": "Access relationship record not found."}
-        },
-        tags=["Staff Administration Operations"]
-    )
-    def delete(self, request):
-        from plans.models import DistributorProviderAccess
-
-        distributor_id = request.data.get("distributor_id")
-        provider_id = request.data.get("provider_id")
+        plan = None
+        if scope == "plan":
+            plan = InsurancePlan.objects.filter(id=plan_id, provider=provider).first() if plan_id else None
+            if plan is None:
+                return Response({"error": "A valid plan_id for this provider is required."}, status=400)
 
         try:
-            access = DistributorProviderAccess.objects.get(
-                distributor__id=distributor_id,
-                provider__id=provider_id,
-            )
-            access.is_active = False
-            access.status = "rejected"
-            access.save(update_fields=["is_active", "status"])
-            return Response({"message": "Access revoked."})
-        except DistributorProviderAccess.DoesNotExist:
-            return Response({"error": "Access record not found."}, status=404)
+            grant = DistributorAccessGrant.objects.grant_directly(
+                distributor=distributor, provider=provider,
+                scope=scope, plan=plan, by=request.user)
+        except ValidationError as e:
+            return Response({"error": " ".join(e.messages)}, status=400)
+        return Response({"message": f"Access granted: {distributor.name} → {provider.name}",
+                         "grant_id": str(grant.id), "status": grant.status}, status=201)
+
+    def delete(self, request):
+        from plans.models import DistributorAccessGrant
+        grants = DistributorAccessGrant.objects.filter(
+            distributor_id=request.data.get("distributor_id"),
+            provider_id=request.data.get("provider_id"),
+            status="approved")
+        if not grants.exists():
+            return Response({"error": "No approved access found."}, status=404)
+        for g in grants:
+            DistributorAccessGrant.objects.revoke(g, by=request.user)
+        return Response({"message": "Access revoked."})
+
+
+class StaffDistributorGrantReviewView(APIView):
+    permission_classes = [IsHumanStaff]
+    throttle_classes = [PartnerRateThrottle]
+
+    def patch(self, request, grant_id):
+        from plans.models import DistributorAccessGrant
+        action = request.data.get("action")
+        if action not in ("approve", "reject", "revoke"):
+            return Response({"error": "action must be approve, reject or revoke."}, status=400)
+        grant = DistributorAccessGrant.objects.filter(id=grant_id).first()
+        if not grant:
+            return Response({"error": "Grant not found."}, status=404)
+
+        mgr = DistributorAccessGrant.objects
+        try:
+            if action == "approve":
+                mgr.approve(grant, by=request.user)
+            elif action == "reject":
+                mgr.reject(grant, by=request.user, note=request.data.get("note", ""))
+            else:
+                mgr.revoke(grant, by=request.user)
+        except ValidationError as e:
+            return Response({"error": " ".join(e.messages)}, status=400)
+        return Response({"message": f"Grant {grant.status}.", "id": str(grant.id)})
 
 
 class StaffServiceAccountCreateView(APIView):
@@ -1352,6 +1310,7 @@ class ServiceAccountTokenView(APIView):
 
     permission_classes = []
     authentication_classes = []
+    throttle_classes = [IPRateThrottle]
 
     SERVICE_ACCOUNT_TOKEN_LIFETIME = timedelta(days=10)
 

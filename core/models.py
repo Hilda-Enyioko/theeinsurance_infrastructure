@@ -8,6 +8,13 @@ import secrets
 import uuid
 from django.core.exceptions import ValidationError
 from django.db import models
+from cryptography.fernet import Fernet
+from django.conf import settings
+from webhooks import events
+
+
+def _fernet():
+    return Fernet(settings.WEBHOOK_ENCRYPTION_KEY)
 
 
 class Partner(models.Model):
@@ -51,8 +58,10 @@ class Partner(models.Model):
         return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
     def save(self, *args, **kwargs):
-        if not self.api_key:
-            self.api_key = secrets.token_urlsafe(32)
+        if not self.api_key_hash:
+            raw = secrets.token_urlsafe(32)
+            self.api_key_hash = self.hash_key(raw)
+            self._raw_api_key = raw 
         super().save(*args, **kwargs)
 
 
@@ -119,28 +128,23 @@ class ProviderProfile(models.Model):
 
 
 class Webhook(models.Model):
-    """External client consumer endpoints receiving system status transmissions."""
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    partner = models.ForeignKey(
-        Partner, on_delete=models.CASCADE, related_name="webhooks"
-    )
+    partner = models.ForeignKey(Partner, on_delete=models.CASCADE, related_name="webhooks")
     url = models.URLField()
-    secret_hash = models.CharField(max_length=64, editable=False)
+    secret_encrypted = models.TextField(blank=True, default="", editable=False)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
-    @staticmethod
-    def hash_secret(raw_secret: str) -> str:
-        """Hashes signature targets for validation."""
-        return hashlib.sha256(raw_secret.encode("utf-8")).hexdigest()
-
     def save(self, *args, **kwargs):
-        if not self.secret_hash:
-            raw_secret = f"whsec_{secrets.token_urlsafe(32)}"
-            self.secret_hash = self.hash_secret(raw_secret)
-            setattr(self, "_raw_webhook_secret", raw_secret)
+        if not self.secret_encrypted:
+            raw = f"whsec_{secrets.token_urlsafe(32)}"
+            self.secret_encrypted = _fernet().encrypt(raw.encode()).decode()
+            self._raw_webhook_secret = raw   # only available on this instance, once
         super().save(*args, **kwargs)
+
+    @property
+    def secret(self) -> str:
+        return _fernet().decrypt(self.secret_encrypted.encode()).decode()
 
     def __str__(self):
         return f"{self.partner.name} → {self.url}"
@@ -149,16 +153,7 @@ class Webhook(models.Model):
 class WebhookEvent(models.Model):
     """Event configuration mapping targeting operational partner topics."""
 
-    EVENT_CHOICES = [
-        ("subscription.created", "Subscription Created"),
-        ("subscription.cancelled", "Subscription Cancelled"),
-        ("subscription.updated", "Subscription Updated"),
-        ("claim.submitted", "Claim Submitted"),
-        ("claim.status_updated", "Claim Status Updated"),
-        ("kyc.submitted", "KYC Submitted"),
-        ("kyc.approved", "KYC Approved"),
-        ("kyc.rejected", "KYC Rejected"),
-    ]
+    EVENT_CHOICES = events.choices(events.PARTNER)
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     webhook = models.ForeignKey(
@@ -177,10 +172,7 @@ class WebhookEvent(models.Model):
 class ServiceWebhookEndpoint(models.Model):
     """Internal M2M subscription pipes running system lifecycle metrics."""
 
-    EVENT_CHOICES = [
-        ("payment.successful", "Payment Successful"),
-        ("charge.failed", "Charge Failed (Dunning)"),
-    ]
+    EVENT_CHOICES = events.choices(events.N8N)
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     service_account = models.ForeignKey(

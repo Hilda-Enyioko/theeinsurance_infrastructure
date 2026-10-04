@@ -33,7 +33,7 @@ class ClaimSerializer(serializers.ModelSerializer):
             "approved_amount", "status",
             "theeinsurance_review_note",
             "provider_review_note",
-            "documents",
+            "documents", "ai_result", "parties_notified_at",
             "submitted_at", "updated_at",
         ]
 
@@ -92,11 +92,9 @@ class ClaimReviewSerializer(serializers.Serializer):
     """
     Used by TheeInsurance staff and provider admins to review claims.
     """
-    status = serializers.ChoiceField(choices=Claim.STATUS_CHOICES)
-    review_note = serializers.CharField(required=False, allow_blank=True)
-    approved_amount = serializers.DecimalField(
-        max_digits=20, decimal_places=2, required=False
-    )
+    status = serializers.ChoiceField(choices=[c[0] for c in Claim.STATUS_CHOICES])
+    review_note = serializers.CharField(required=False, allow_blank=True, default="")
+    approved_amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
 
     def validate(self, attrs):
         status = attrs.get("status")

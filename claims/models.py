@@ -20,10 +20,14 @@ class Claim(models.Model):
     
     STATUS_CHOICES = [
         ("submitted", "Submitted"),
+        ("ai_check_pending", "AI Check Pending"),
+        ("flagged", "Flagged for Staff Review"),
+        ("forwarded", "Forwarded to Provider"),
         ("under_review", "Under Review"),
         ("more_info_required", "More Information Required"),
         ("approved", "Approved"),
         ("rejected", "Rejected"),
+        ("paid", "Paid"),
     ]
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -54,6 +58,8 @@ class Claim(models.Model):
     approved_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="submitted")
+    ai_result = models.JSONField(null=True, blank=True)
+    parties_notified_at = models.DateTimeField(null=True, blank=True)
     
     # TheeInsurance Internal Review
     theeinsurance_review_note = models.TextField(blank=True)
@@ -85,7 +91,7 @@ class Claim(models.Model):
         super().save(*args, **kwargs)
     
     def __str__(self):
-        return f"{self.claim_reference} - {self.customer.user.email} ({self.status()})"
+        return f"{self.claim_reference} - {self.customer.user.email} ({self.status})"
 
 
 class ClaimDocument(models.Model):
@@ -158,3 +164,22 @@ REQUIRED_CLAIM_DOCUMENTS = {
         "travel_insurance_certificate",
     ],
 }
+
+
+class ClaimPayment(models.Model):
+    PENDING, COMPLETED, FAILED = "pending", "completed", "failed"
+    STATUS_CHOICES = [(PENDING, "Pending"), (COMPLETED, "Completed"), (FAILED, "Failed")]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    claim = models.ForeignKey(Claim, on_delete=models.CASCADE, related_name="payments")
+    reference = models.CharField(max_length=64, unique=True)   # our merchant tx reference
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=PENDING)
+    gateway_reference = models.CharField(max_length=100, blank=True)
+    failure_reason = models.CharField(max_length=255, blank=True)
+    receipt_url = models.URLField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.reference} ({self.status})"

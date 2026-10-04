@@ -49,11 +49,13 @@ urlpatterns = [
     
     # N8N API Resources
     path('api/v1/webhooks/', include(('webhooks.urls', 'webhooks'), namespace='register-n8n-webhooks')),
+    path("api/service/claims/", include("claims.service_urls")),
     
     # OpenAPI Schema & Documentation Engine
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
+    
 ]
 
 # Serve Media Assets locally during development

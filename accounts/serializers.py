@@ -160,13 +160,12 @@ class PartnerOnboardingSerializer(serializers.Serializer):
         return attrs
 
     def create(self, validated_data):
-        """
-        Coordinates creation steps across Partner, internal profile types, 
-        and administrative User profiles.
-        """
         partner_type = validated_data.pop("partner_type")
         commission_rate = validated_data.pop("commission_rate", 0.00)
         nomba_account_id = validated_data.pop("nomba_account_id", None)
+        naicom_licence_number = validated_data.pop("naicom_licence_number", "")
+        settlement_bank_account = validated_data.pop("settlement_bank_account", "")
+        settlement_bank_code = validated_data.pop("settlement_bank_code", "")
         validated_data.pop("confirm_password")
 
         partner = Partner.objects.create(
@@ -174,38 +173,28 @@ class PartnerOnboardingSerializer(serializers.Serializer):
             slug=validated_data.pop("partner_slug"),
             partner_type=partner_type,
             nomba_account_id=nomba_account_id,
-            is_active=False, # inactive until KYC is approved
+            is_active=False,   # inactive until KYC is approved
         )
 
         if partner_type == "distributor":
             DistributorProfile.objects.create(
-                partner=partner,
-                commission_rate=commission_rate,
+                partner=partner, commission_rate=commission_rate,
                 settlement_bank_account=settlement_bank_account,
                 settlement_bank_code=settlement_bank_code,
             )
         else:
             ProviderProfile.objects.create(
-                partner=partner,
-                naicom_licence_number=naicom_licence_number,
+                partner=partner, naicom_licence_number=naicom_licence_number,
                 settlement_bank_account=settlement_bank_account,
                 settlement_bank_code=settlement_bank_code,
             )
 
         user = CustomUser.objects.create_user(
-            email=validated_data["email"],
-            password=validated_data["password"],
-            first_name=validated_data["first_name"],
-            last_name=validated_data["last_name"],
+            email=validated_data["email"], password=validated_data["password"],
+            first_name=validated_data["first_name"], last_name=validated_data["last_name"],
             role="partner_admin",
         )
-
-        PartnerAdmin.objects.create(
-            user=user,
-            partner=partner,
-            role="partner_admin",
-        )
-
+        PartnerAdmin.objects.create(user=user, partner=partner, role="partner_admin")
         return partner
 
 

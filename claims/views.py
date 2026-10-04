@@ -15,6 +15,24 @@ from .serializers import (
 from accounts.models import CustomerProfile
 from core.throttles import PartnerRateThrottle
 
+from django.db import transaction
+from django.utils import timezone
+
+from accounts.permissions import IsCustomer, IsProviderAdmin, IsHumanStaff
+from webhooks import builders as b
+from webhooks.events import E
+from webhooks.services import emit
+
+from .models import Claim, ClaimDocument, REQUIRED_CLAIM_DOCUMENTS
+from .settlement import start_claim_payout
+
+DOC_UPLOAD_STATUSES = ("submitted", "more_info_required")
+PROVIDER_REVIEWABLE = ("forwarded", "more_info_required")
+PROVIDER_DECISIONS = ("approved", "rejected", "more_info_required")
+STAFF_TRANSITIONS = {
+    "flagged": {"forwarded", "rejected", "more_info_required"},
+    "ai_check_pending": {"forwarded", "flagged"},   # manual override if AI is down
+}
 
 # Helpers
 def get_partner_from_user(user):
@@ -92,39 +110,26 @@ class CustomerClaimListCreateView(APIView):
 
         claim_type = serializer.validated_data["claim_type"]
 
-        claim = Claim.objects.create(
-            subscription=subscription,
-            customer=profile,
-            provider=subscription.provider,
-            claim_type=claim_type,
-            incident_date=serializer.validated_data["incident_date"],
-            incident_description=serializer.validated_data["incident_description"],
-            claimed_amount=serializer.validated_data["claimed_amount"],
-            status="submitted",
-        )
-
-        dispatch_webhook(
-            subscription.provider,
-            "claim.submitted",
-            {
-                "claim_id": str(claim.id),
-                "claim_reference": claim.claim_reference,
-                "claim_type": claim.claim_type,
-                "customer_email": profile.user.email,
-                "claimed_amount": str(claim.claimed_amount),
-                "subscription_id": str(subscription.id),
-            }
-        )
-
-        required_docs = REQUIRED_CLAIM_DOCUMENTS.get(claim_type, [])
+        with transaction.atomic():
+            claim = Claim.objects.create(
+                subscription=subscription,
+                customer=profile,
+                provider=subscription.provider,
+                claim_type=claim_type,
+                incident_date=serializer.validated_data["incident_date"],
+                incident_description=serializer.validated_data["incident_description"],
+                claimed_amount=serializer.validated_data["claimed_amount"],
+                status="submitted",
+            )
+            emit(E.CLAIM_SUBMITTED, partner=claim.provider, aggregate_id=claim.id,
+                 data=b.claim_submitted(claim))
 
         return Response({
             "message": "Claim submitted. Please upload supporting documents.",
             "claim_id": str(claim.id),
             "claim_reference": claim.claim_reference,
-            "required_documents": required_docs,
+            "required_documents": REQUIRED_CLAIM_DOCUMENTS.get(claim_type, []),
         }, status=201)
-
 
 class CustomerClaimDetailView(APIView):
     """
@@ -213,55 +218,44 @@ class ClaimDocumentUploadView(APIView):
         except CustomerProfile.DoesNotExist:
             return Response({"error": "Customer profile not found."}, status=404)
 
-        try:
-            claim = Claim.objects.get(
-                id=claim_id,
-                customer=profile,
-                status="submitted",
-            )
-        except Claim.DoesNotExist:
-            return Response(
-                {"error": "Claim not found or no longer accepting documents."},
-                status=404
-            )
-
         document_type = request.data.get("document_type")
         file = request.FILES.get("file")
-
         if not document_type:
             return Response({"error": "document_type is required."}, status=400)
         if not file:
             return Response({"error": "file is required."}, status=400)
 
-        valid_types = [choice[0] for choice in ClaimDocument.DOCUMENT_TYPE_CHOICES]
+        valid_types = [c[0] for c in ClaimDocument.DOCUMENT_TYPE_CHOICES]
         if document_type not in valid_types:
-            return Response(
-                {"error": f"Invalid document type. Valid types: {valid_types}"},
-                status=400
-            )
+            return Response({"error": f"Invalid document type. Valid types: {valid_types}"}, status=400)
 
-        required_docs = REQUIRED_CLAIM_DOCUMENTS.get(claim.claim_type, [])
-        if document_type not in required_docs:
-            return Response(
-                {"error": f"This document is not required. Required: {required_docs}"},
-                status=400
-            )
+        with transaction.atomic():
+            claim = (Claim.objects.select_for_update()
+                     .filter(id=claim_id, customer=profile, status__in=DOC_UPLOAD_STATUSES).first())
+            if not claim:
+                return Response({"error": "Claim not found or no longer accepting documents."}, status=404)
 
-        ClaimDocument.objects.update_or_create(
-            claim=claim,
-            document_type=document_type,
-            defaults={"file": file},
-        )
+            required_docs = REQUIRED_CLAIM_DOCUMENTS.get(claim.claim_type, [])
+            if document_type not in required_docs:
+                return Response({"error": f"This document is not required. Required: {required_docs}"}, status=400)
 
-        uploaded_types = list(
-            claim.documents.values_list("document_type", flat=True)
-        )
-        missing_docs = [doc for doc in required_docs if doc not in uploaded_types]
+            ClaimDocument.objects.update_or_create(
+                claim=claim, document_type=document_type, defaults={"file": file})
+
+            uploaded = set(claim.documents.values_list("document_type", flat=True))
+            missing_docs = [d for d in required_docs if d not in uploaded]
+
+            # all docs in, first time -> lock the claim and ask n8n for the AI check
+            if not missing_docs and claim.status == "submitted":
+                claim.status = "ai_check_pending"
+                claim.save(update_fields=["status", "updated_at"])
+                emit(E.CLAIM_AI_CHECK_REQUESTED, partner=claim.provider, aggregate_id=claim.id,
+                     data=b.claim_ai_check_requested(claim))
 
         return Response({
             "message": "Document uploaded successfully.",
             "missing_documents": missing_docs,
-            "all_documents_uploaded": len(missing_docs) == 0,
+            "all_documents_uploaded": not missing_docs,
         })
 
     @extend_schema(
@@ -395,40 +389,52 @@ class ProviderClaimReviewView(APIView):
         tags=["Provider Claim Management"]
     )
     def patch(self, request, claim_id):
-        partner = get_partner_from_user(request.user)
-
-        try:
-            claim = Claim.objects.get(id=claim_id, provider=partner)
-        except Claim.DoesNotExist:
-            return Response({"error": "Claim not found."}, status=404)
+        profile = getattr(request.user, "partner_admin_profile", None)
+        if profile is None or profile.role == "partner_viewer":
+            return Response({"error": "You are not allowed to review claims."}, status=403)
+        partner = profile.partner
 
         serializer = ClaimReviewSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
+        data = serializer.validated_data
 
-        claim.status = serializer.validated_data["status"]
-        claim.provider_review_note = serializer.validated_data.get("review_note", "")
-        if serializer.validated_data.get("approved_amount"):
-            claim.approved_amount = serializer.validated_data["approved_amount"]
+        new_status = data["status"]
+        if new_status not in PROVIDER_DECISIONS:
+            return Response({"error": f"status must be one of {list(PROVIDER_DECISIONS)}."}, status=400)
+        approved_amount = data.get("approved_amount")
+        if new_status == "approved" and approved_amount is None:
+            return Response({"error": "approved_amount is required to approve."}, status=400)
 
-        try:
-            claim.reviewed_by_provider = request.user.partner_admin_profile
-        except Exception:
-            pass
+        with transaction.atomic():
+            claim = (Claim.objects.select_for_update()
+                     .filter(id=claim_id, provider=partner).first())
+            if not claim:
+                return Response({"error": "Claim not found."}, status=404)
+            if claim.status not in PROVIDER_REVIEWABLE:
+                return Response({"error": f"Claim in '{claim.status}' cannot be reviewed."}, status=409)
+            if approved_amount is not None and approved_amount > claim.claimed_amount:
+                return Response({"error": "approved_amount cannot exceed claimed_amount."}, status=400)
 
-        claim.save()
+            claim.status = new_status
+            claim.provider_review_note = data.get("review_note", "")
+            if approved_amount is not None:
+                claim.approved_amount = approved_amount
+            claim.reviewed_by_provider = profile
+            claim.save()
 
-        dispatch_webhook(
-            claim.provider,
-            "claim.status_updated",
-            {
-                "claim_id": str(claim.id),
-                "claim_reference": claim.claim_reference,
-                "status": claim.status,
-                "customer_email": claim.customer.user.email,
-                "approved_amount": str(claim.approved_amount) if claim.approved_amount else None,
-            }
-        )
+            disc = f"{claim.status}:{claim.updated_at.isoformat()}"
+            emit(E.PROVIDER_CLAIM_DECISION, partner=partner, aggregate_id=claim.id,
+                 data=b.provider_claim_decision(claim, claim.status), discriminator=disc)
+            if claim.status == "approved":
+                emit(E.CLAIM_APPROVED, partner=partner, aggregate_id=claim.id,
+                     data=b.claim_approved(claim))
+                start_claim_payout(claim)
+            elif claim.status == "rejected":
+                emit(E.CLAIM_REJECTED, partner=partner, aggregate_id=claim.id,
+                     data=b.claim_rejected(claim))
+            emit(E.CLAIM_STATUS_UPDATED, partner=partner, aggregate_id=claim.id,
+                 data=b.claim_status_updated(claim), discriminator=disc)   # legacy event
 
         return Response({
             "message": f"Claim {claim.status}.",
@@ -442,7 +448,7 @@ class StaffClaimListView(APIView):
     """
     TheeInsurance super admins view and triage all claims across all partners.
     """
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdmin, IsHumanStaff]
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
@@ -469,7 +475,7 @@ class StaffClaimReviewView(APIView):
     """
     TheeInsurance staff do initial triage before forwarding to provider.
     """
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdmin, IsHumanStaff]
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
@@ -515,19 +521,33 @@ class StaffClaimReviewView(APIView):
         tags=["TheeInsurance Platform Core Operations"]
     )
     def patch(self, request, claim_id):
-        try:
-            claim = Claim.objects.get(id=claim_id)
-        except Claim.DoesNotExist:
-            return Response({"error": "Claim not found."}, status=404)
-
         serializer = ClaimReviewSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
+        new_status = serializer.validated_data["status"]
 
-        claim.status = serializer.validated_data["status"]
-        claim.theeinsurance_review_note = serializer.validated_data.get("review_note", "")
-        claim.reviewed_by_theeinsurance = request.user
-        claim.save()
+        with transaction.atomic():
+            claim = Claim.objects.select_for_update().filter(id=claim_id).first()
+            if not claim:
+                return Response({"error": "Claim not found."}, status=404)
+            if new_status not in STAFF_TRANSITIONS.get(claim.status, set()):
+                return Response(
+                    {"error": f"Cannot move a '{claim.status}' claim to '{new_status}'."}, status=409)
+
+            claim.status = new_status
+            claim.theeinsurance_review_note = serializer.validated_data.get("review_note", "")
+            claim.reviewed_by_theeinsurance = request.user
+            claim.save()
+
+            if new_status == "forwarded":
+                emit(E.CLAIM_FORWARDED, partner=claim.provider, aggregate_id=claim.id,
+                     data=b.claim_forwarded(claim), discriminator="staff")
+            elif new_status == "flagged":
+                emit(E.CLAIM_FLAGGED, partner=claim.provider, aggregate_id=claim.id,
+                     data=b.claim_flagged(claim), discriminator="staff")
+            elif new_status == "rejected":
+                emit(E.CLAIM_REJECTED, partner=claim.provider, aggregate_id=claim.id,
+                     data=b.claim_rejected(claim), discriminator="staff")
 
         return Response({
             "message": f"Claim updated to {claim.status}.",
