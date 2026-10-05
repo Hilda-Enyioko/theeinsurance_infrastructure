@@ -46,7 +46,7 @@ You never change a claim directly. You only **report results**, and the backend 
 
 ## Setup in 5 Steps
 
-**Base URL:** `https://theeinsurance-staging.onrender.com`
+**Base URL:** `[https://theeinsurance-backend-staging.onrender.com](https://theeinsurance-backend-staging.onrender.com)`
 
 The URLs in this guide start with `/api/v1/`. If any call returns 404, ask the backend engineer to confirm the exact path in Swagger (`/api/schema/swagger-ui/`).
 
