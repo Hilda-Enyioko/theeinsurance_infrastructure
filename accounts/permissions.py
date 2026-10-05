@@ -5,7 +5,7 @@ class IsStaffMember(BasePermission):
     Super Admin or Support Admin 
     any platform staff role
     """
-    def has_permission(self, request):
+    def has_permission(self, request, view):
         return bool(
             request.user
             and request.user.is_authenticated
@@ -16,7 +16,7 @@ class IsSuperAdmin(BasePermission):
     """
     TheeInsurance staff only.
     """
-    def has_permission(self, request):
+    def has_permission(self, request, view):
         return (
             request.user
             and request.user.is_authenticated
