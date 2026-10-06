@@ -289,5 +289,5 @@ SPECTACULAR_SETTINGS = {
     ],
 }
 
-RESEND_API_KEY = env("RESEND_API_KEY", default="")
-DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="TheeInsurance <no-reply@theeinsurance.com>")
+RESEND_API_KEY = config("RESEND_API_KEY", default="")
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="TheeInsurance <no-reply@theeinsurance.com>")
