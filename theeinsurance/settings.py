@@ -257,38 +257,37 @@ WEBHOOK_ENCRYPTION_KEY = config("WEBHOOK_ENCRYPTION_KEY")
 N8N_OUTBOUND_TOKEN = config("N8N_OUTBOUND_TOKEN", default="")
 N8N_SIGNING_SECRET = config("N8N_SIGNING_SECRET", default="")
 
+# settings.py
 SPECTACULAR_SETTINGS = {
-    'TITLE': 'TheeInsurance API',
-    'DESCRIPTION': (
-        'A headless, API-first insurance distribution platform. '
-        'Companies integrate TheeInsurance into their products via API '
-        'and offer insurance plans to their customers without building '
-        'the insurance layer themselves.'
+    "TITLE": "TheeInsurance API",
+    "DESCRIPTION": (
+        "Headless insurance distribution API.\n\n"
+        "**Auth:** most endpoints need `Authorization: Bearer <access>`. "
+        "Customer-facing endpoints also need `X-Partner-Key` (the provider/distributor the customer belongs to)."
     ),
-    'VERSION': '1.0.0',
-    'SERVE_INCLUDE_SCHEMA': False,
-    'SWAGGER_UI_DIST': 'SIDECAR',
-    'SWAGGER_UI_FAVICON_HREF': 'SIDECAR',
-    'REDOC_DIST': 'SIDECAR',
-    "SECURITY": [{"jwtAuth": []}],
-    "SECURITY_DEFINITIONS": {
-        "jwtAuth": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT",
+    "VERSION": "1.0.0",
+    "COMPONENT_SPLIT_REQUEST": True,
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SECURITY": [{"BearerAuth": []}],
+    "APPEND_COMPONENTS": {
+        "securitySchemes": {
+            "BearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"},
+            "PartnerKey": {"type": "apiKey", "in": "header", "name": "X-Partner-Key"},
         }
     },
-    "OPERATION_ID_NAMING_STRATEGY": "operation_id",
-    "SCHEMA_PATH_PREFIX": r"/api/v[0-9]",
-    "COMPONENT_SPLIT_REQUEST": True,
-    "ENUM_NAME_OVERRIDES": {
-        "ClaimStatusEnum": "claims.models.Claim.STATUS_CHOICES",
-        "SubscriptionStatusEnum": "subscriptions.models.PolicySubscription.STATUS_CHOICES",
-        "PlanCoverageLevelEnum": "plans.models.InsurancePlan.COVERAGE_LEVELS",
-        "InsuranceCategoryEnum": "plans.models.InsuranceCategory.CATEGORY_CHOICES",
-        "SubscriptionDocumentTypeChoicesEnum": "subscriptions.models.SubscriptionDocument.DOCUMENT_TYPE_CHOICES",
-        "CallbackLogStatusEnum": "payments.models.CallbackLog.Status",
-        "KYCReviewStatusEnum": "accounts.models.CustomerKYC.STATUS_CHOICES",  # covers both CustomerKYC and PartnerKYC
-        "CustomerKYCTypeEnum": "accounts.models.CustomerKYC.ID_TYPE_CHOICES",
-    },
+    "TAGS": [
+        {"name": "1. Partners", "description": "Shared by providers and distributors: onboarding, KYC, profile, team, API key."},
+        {"name": "2. Providers", "description": "Insurance-provider-only operations."},
+        {"name": "3. Distributors", "description": "Distributor-only operations."},
+        {"name": "4. Customers", "description": "Customer registration, login and KYC (via a provider or distributor)."},
+        {"name": "5. Staff", "description": "TheeInsurance internal staff, KYC reviews, service accounts."},
+        {"name": "6. Plans", "description": "Insurance plans and customer plan browsing."},
+        {"name": "7. Subscriptions", "description": "Purchasing and managing plans. Requires approved customer KYC."},
+        {"name": "8. Claims", "description": "Claim submission and review."},
+        {"name": "9. Webhooks", "description": "Partner webhooks and event subscriptions."},
+        {"name": "10. Access Grant", "description": "Distributor access to provider plans."},
+    ],
 }
+
+RESEND_API_KEY = env("RESEND_API_KEY", default="")
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="TheeInsurance <no-reply@theeinsurance.com>")
