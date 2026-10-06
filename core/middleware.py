@@ -60,13 +60,22 @@ class PartnerScopeMiddleware:
                         status=401,
                     )
 
-                try:
-                    partner = Partner.objects.get(api_key=api_key, is_active=True)
-                    request.partner = partner
-                except Partner.DoesNotExist:
+                api_key = request.headers.get("X-Partner-Key") or request.META.get("HTTP_X_PARTNER_KEY")
+
+                if not api_key:
                     return JsonResponse(
-                        {"error": "Invalid or inactive partner key."},
+                        {"error": "X-Partner-Key header is required."},
                         status=401,
-                    )
+                )
+
+            try:
+                key_hash = Partner.hash_key(api_key)
+                partner = Partner.objects.get(api_key_hash=key_hash, is_active=True)
+                request.partner = partner
+            except Partner.DoesNotExist:
+                return JsonResponse(
+                    {"error": "Invalid or inactive partner key."},
+                    status=401,
+                )
 
         return self.get_response(request)
