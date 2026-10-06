@@ -7,17 +7,17 @@ from django.urls import resolve, Resolver404
 from .models import Partner
 
 EXEMPT_VIEW_NAMES = {
-    # public / before a key exists
+    # public
     "partner-onboard", "login", "token-refresh", "service-account-token",
-    # partner portal: JWT only (the portal never holds the X-Partner-Key)
+    # partner portal: JWT only
     "partner-kyc", "partner-me", "partner-profile", "partner-api-key-regenerate",
-    "partner-team", "partner-team-deactivate",
+    "partner-team", "partner-team-deactivate", "partner-subscription-list",
     "provider-plan-list-create", "provider-plan-detail",
     "provider-access-requests", "provider-access-request-review",
     "distributor-marketplace-providers", "distributor-marketplace-plans",
     "distributor-access-grants", "distributor-access-grant-withdraw",
-    # payments
-    "payments:callback", "payments:webhook",
+    # Paystack
+    "payments:paystack-webhook",
 }
 EXEMPT_PATH_PREFIXES = ("/api/v1/staff/",)
 
