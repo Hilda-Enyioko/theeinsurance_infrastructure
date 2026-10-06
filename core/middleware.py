@@ -33,11 +33,7 @@ class PartnerScopeMiddleware:
     def __call__(self, request):
         request.partner = None
 
-        if not request.path.startswith("/api/v1/"):
-            return self.get_response(request)
-
-        # 1. Bypass check for exempt path prefixes
-        if any(request.path.startswith(f"/api/v1{path}") or path in request.path for path in EXEMPT_PATH_PREFIXES):
+        if request.path.startswith(EXEMPT_PATH_PREFIXES):
             return self.get_response(request)
 
         # 2. Check if the resolved view is exempt
