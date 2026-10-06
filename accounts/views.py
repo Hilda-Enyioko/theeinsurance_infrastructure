@@ -703,38 +703,19 @@ class StaffPartnerKYCReviewView(APIView):
         tags=[Tag.STAFF],
     )
     def patch(self, request, partner_id):
-        try:
-            kyc = PartnerKYC.objects.select_related("partner").get(partner__id=partner_id)
-        except PartnerKYC.DoesNotExist:
+        kyc = PartnerKYC.objects.filter(partner__id=partner_id).first()
+        if not kyc:
             return Response({"error": "KYC not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        action, note = request.data.get("action"), (request.data.get("note") or "").strip()
+        action = request.data.get("action")
         if action not in ("approve", "reject"):
             return Response({"error": "Action must be 'approve' or 'reject'."}, status=status.HTTP_400_BAD_REQUEST)
-        if action == "reject" and not note:
-            return Response({"error": "A note is required when rejecting."}, status=status.HTTP_400_BAD_REQUEST)
-        if kyc.status != "pending":
-            return Response({"error": f"KYC has already been {kyc.status}."}, status=status.HTTP_409_CONFLICT)
-
-        with transaction.atomic():
-            kyc.status = "approved" if action == "approve" else "rejected"
-            kyc.review_note, kyc.reviewed_by, kyc.reviewed_at = note, request.user.email, timezone.now()
-            kyc.save()
-            partner = kyc.partner
-            if action == "approve":
-                partner.is_active = True
-                partner.save(update_fields=["is_active"])
-            emit(E.KYC_APPROVED if action == "approve" else E.KYC_REJECTED,
-                 partner=partner, aggregate_id=partner.id, discriminator=kyc.reviewed_at.isoformat(),
-                 data={"partner_id": str(partner.id), "partner_name": partner.name, "status": kyc.status, "note": note})
-            if action == "approve":
-                emails.on_commit_send(emails.send_kyc_approved, partner)
-            else:
-                emails.on_commit_send(emails.send_kyc_rejected, partner, note)
-
-        return Response({"message": f"Partner KYC {kyc.status}.", "partner": partner.name,
-                         "is_active": partner.is_active})
-
+        try:
+            kyc = review_partner_kyc(kyc.pk, approve=action == "approve",
+                                    note=request.data.get("note", ""), reviewer_email=request.user.email)
+        except KYCReviewError as e:
+            return Response({"error": str(e)}, status=e.status_code)
+        return Response({"message": f"Partner KYC {kyc.status}.", "partner": kyc.partner.name,
+                        "is_active": kyc.partner.is_active})
 
 class StaffCustomerKYCReviewView(APIView):
     """NEW: nothing could approve customer KYC before, so no customer could ever subscribe."""
@@ -769,21 +750,18 @@ class StaffCustomerKYCReviewView(APIView):
         tags=[Tag.STAFF],
     )
     def patch(self, request, kyc_id):
-        kyc = CustomerKYC.objects.filter(id=kyc_id).first()
-        if not kyc:
+        if not CustomerKYC.objects.filter(id=kyc_id).exists():
             return Response({"error": "KYC not found."}, status=status.HTTP_404_NOT_FOUND)
-        action, note = request.data.get("action"), (request.data.get("note") or "").strip()
+        action = request.data.get("action")
         if action not in ("approve", "reject"):
             return Response({"error": "Action must be 'approve' or 'reject'."}, status=status.HTTP_400_BAD_REQUEST)
-        if action == "reject" and not note:
-            return Response({"error": "A note is required when rejecting."}, status=status.HTTP_400_BAD_REQUEST)
-        if kyc.status != "pending":
-            return Response({"error": f"KYC has already been {kyc.status}."}, status=status.HTTP_409_CONFLICT)
-        kyc.status = "approved" if action == "approve" else "rejected"
-        kyc.review_note, kyc.reviewed_at = note, timezone.now()
-        kyc.save()
-        return Response({"message": f"Customer KYC {kyc.status}."})
 
+        try:
+            kyc = review_customer_kyc(kyc_id, approve=action == "approve", note=request.data.get("note", ""))
+        except KYCReviewError as e:
+            return Response({"error": str(e)}, status=e.status_code)
+
+        return Response({"message": f"Customer KYC {kyc.status}."})
 
 # ---- Service accounts
 class StaffServiceAccountCreateView(APIView):
