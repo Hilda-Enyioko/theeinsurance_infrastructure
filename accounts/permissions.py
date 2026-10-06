@@ -148,3 +148,19 @@ class IsHumanStaff(BasePermission):
     def has_permission(self, request, view):
         u = request.user
         return bool(u and u.is_authenticated and u.role in ("super_admin", "support_admin"))
+
+
+class IsCustomerOfPartner(BasePermission):
+    """For storefront endpoints: caller must be logged in AND belong to the partner whose X-Partner-Key is sent."""
+    message = "You are not registered with this partner."
+
+    def has_permission(self, request, view):
+        user, partner = request.user, getattr(request, "partner", None)
+        if not (user and user.is_authenticated and partner):
+            return False
+        if user.role == "customer":
+            return user.customer_profiles.filter(partner=partner).exists()
+        if user.role == "partner_admin":      # partners may preview their own storefront
+            profile = getattr(user, "partner_admin_profile", None)
+            return bool(profile and profile.partner_id == partner.id)
+        return False
