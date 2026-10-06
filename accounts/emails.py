@@ -53,3 +53,13 @@ def send_kyc_rejected(partner, note):
 
 def on_commit_send(fn, *args):
     _after_commit(fn, *args)
+
+def send_customer_kyc_decision(email, first_name, approved, note=""):
+    if approved:
+        subject, body = "Your identity is verified", (
+            f"<p>Hi {first_name},</p><p>Your KYC has been verified. You can now purchase plans.</p>")
+    else:
+        subject, body = "Your KYC needs attention", (
+            f"<p>Hi {first_name},</p><p>We couldn't verify your KYC.</p><p>Reason: {note}</p>"
+            "<p>Please log in and resubmit.</p>")
+    _send([email], subject, body)
