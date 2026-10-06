@@ -7,26 +7,19 @@ from django.urls import resolve, Resolver404
 from .models import Partner
 
 EXEMPT_VIEW_NAMES = {
-    "partner-onboard",
-    "partner-kyc",
-    "partner-me",
-    "login",
-    "token-refresh",
-    "payments:callback",
-    "payments:nomba-callback",
-    "payments:nomba-webhook",
-    "payments:webhook",
-    "partner-api-key-regenerate",
-    "partner-api-key-retrieve",
+    # public / before a key exists
+    "partner-onboard", "login", "token-refresh", "service-account-token",
+    # partner portal: JWT only (the portal never holds the X-Partner-Key)
+    "partner-kyc", "partner-me", "partner-profile", "partner-api-key-regenerate",
+    "partner-team", "partner-team-deactivate",
+    "provider-plan-list-create", "provider-plan-detail",
+    "provider-access-requests", "provider-access-request-review",
+    "distributor-marketplace-providers", "distributor-marketplace-plans",
+    "distributor-access-grants", "distributor-access-grant-withdraw",
+    # keep only if these routes still exist
+    "payments:callback", "payments:webhook",
 }
-
-EXEMPT_PATH_PREFIXES = (
-    "/staff/",
-    "/service-account/",
-    "/nomba/webhook/",
-    "/interswitch/webhook/",
-)
-
+EXEMPT_PATH_PREFIXES = ("/api/v1/staff/",)
 
 class PartnerScopeMiddleware:
     """
