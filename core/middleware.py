@@ -16,7 +16,7 @@ EXEMPT_VIEW_NAMES = {
     "provider-access-requests", "provider-access-request-review",
     "distributor-marketplace-providers", "distributor-marketplace-plans",
     "distributor-access-grants", "distributor-access-grant-withdraw",
-    # keep only if these routes still exist
+    # payments
     "payments:callback", "payments:webhook",
 }
 EXEMPT_PATH_PREFIXES = ("/api/v1/staff/",)
@@ -32,7 +32,11 @@ class PartnerScopeMiddleware:
 
     def __call__(self, request):
         request.partner = None
+        
+        if not request.path.startswith("/api/v1/"):
+            return self.get_response(request)
 
+        # Bypass check for exempt path prefixes
         if request.path.startswith(EXEMPT_PATH_PREFIXES):
             return self.get_response(request)
 
