@@ -12,24 +12,27 @@ from core.storage import KYCDocumentStorage
 # Custom User ------------------------------------------------------------------------
 
 class CustomUserManager(BaseUserManager):
-    ...
+    def create_user(self, email, password=None, **extra_fields):
+        if not email:
+            raise ValueError("Email is required.")
+        email = self.normalize_email(email)
+        extra_fields.setdefault("role", "customer")
+        extra_fields.setdefault("is_staff", False)
+        extra_fields.setdefault("is_superuser", False)
+        extra_fields.setdefault("is_active", True)
+        user = self.model(email=email, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
     def create_superuser(self, email, password=None, **extra_fields):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("role", "super_admin")
-
         if not email:
             raise ValueError("Email is required.")
         email = self.normalize_email(email)
-
-        # Import locally if needed to prevent circular imports
-        from .models import Staff
-
-        staff_user = Staff(
-            email=email,
-            created_by=None,
-            **extra_fields,
-        )
+        staff_user = Staff(email=email, created_by=None, **extra_fields)
         staff_user.set_password(password)
         staff_user.save(using=self._db)
         return staff_user

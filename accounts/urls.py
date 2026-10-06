@@ -1,9 +1,11 @@
 from django.urls import path
+
 from .views import (
-    PartnerOnboardingView, PartnerKYCView, PartnerMeView,
-    PartnerAPIKeyRegenerateView, CustomerRegisterView, CustomerKYCView,
-    LoginView, TokenRefreshView, StaffLoginView, StaffAccountView,
-    StaffAccountDeactivateView, StaffPartnerKYCReviewView,
+    PartnerOnboardingView, PartnerKYCView, PartnerMeView, PartnerProfileView,
+    PartnerAPIKeyRegenerateView, PartnerTeamView, PartnerTeamMemberDeactivateView,
+    CustomerRegisterView, CustomerKYCView, LoginView, TokenRefreshView,
+    StaffLoginView, StaffAccountView, StaffAccountDeactivateView,
+    StaffPartnerKYCReviewView, StaffCustomerKYCReviewView,
     StaffDistributorAccessView, StaffDistributorGrantReviewView,
     StaffServiceAccountCreateView, StaffServiceAccountListView,
     StaffServiceAccountRevokeView, ServiceAccountTokenView,
@@ -13,7 +15,10 @@ urlpatterns = [
     path("partner/onboard/", PartnerOnboardingView.as_view(), name="partner-onboard"),
     path("partner/kyc/", PartnerKYCView.as_view(), name="partner-kyc"),
     path("partner/me/", PartnerMeView.as_view(), name="partner-me"),
+    path("partner/profile/", PartnerProfileView.as_view(), name="partner-profile"),                 # NEW
     path("partner/api-key/regenerate/", PartnerAPIKeyRegenerateView.as_view(), name="partner-api-key-regenerate"),
+    path("partner/team/", PartnerTeamView.as_view(), name="partner-team"),                          # was unrouted
+    path("partner/team/<uuid:member_id>/deactivate/", PartnerTeamMemberDeactivateView.as_view(), name="partner-team-deactivate"),  # was unrouted
 
     path("auth/register/", CustomerRegisterView.as_view(), name="customer-register"),
     path("auth/kyc/", CustomerKYCView.as_view(), name="customer-kyc"),
@@ -25,6 +30,8 @@ urlpatterns = [
     path("staff/accounts/<uuid:staff_id>/deactivate/", StaffAccountDeactivateView.as_view(), name="staff-account-deactivate"),
     path("staff/kyc/partners/", StaffPartnerKYCReviewView.as_view(), name="staff-partner-kyc-list"),
     path("staff/kyc/partners/<uuid:partner_id>/", StaffPartnerKYCReviewView.as_view(), name="staff-partner-kyc-review"),
+    path("staff/kyc/customers/", StaffCustomerKYCReviewView.as_view(), name="staff-customer-kyc-list"),                 # NEW
+    path("staff/kyc/customers/<uuid:kyc_id>/", StaffCustomerKYCReviewView.as_view(), name="staff-customer-kyc-review"), # NEW
     path("staff/distributor-access/", StaffDistributorAccessView.as_view(), name="staff-distributor-access"),
     path("staff/distributor-access/<uuid:grant_id>/", StaffDistributorGrantReviewView.as_view(), name="staff-distributor-grant-review"),
     path("staff/service-accounts/", StaffServiceAccountListView.as_view(), name="staff-service-account-list"),

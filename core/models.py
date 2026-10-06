@@ -17,6 +17,16 @@ def _fernet():
     return Fernet(settings.WEBHOOK_ENCRYPTION_KEY)
 
 
+class SettlementDetails(models.Model):
+    """Shared payout details for providers and distributors."""
+    settlement_account_name = models.CharField(max_length=255, blank=True)
+    settlement_bank_account = models.CharField(max_length=64, blank=True)
+    settlement_bank_code = models.CharField(max_length=10, blank=True)
+
+    class Meta:
+        abstract = True
+
+
 class Partner(models.Model):
     """
     Core business entity table identifying and authorizing third-party partners.
@@ -31,23 +41,13 @@ class Partner(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
     slug = models.SlugField(unique=True)
-
     api_key_hash = models.CharField(max_length=64, unique=True, editable=False)
-    
     partner_type = models.CharField(max_length=20, choices=PARTNER_TYPE_CHOICES)
-    is_active = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=False)   # activated when KYC is approved
+    phone_number = models.CharField(max_length=20, blank=True)
+    address = models.TextField(blank=True)
+    website = models.URLField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    nomba_account_id = models.CharField(
-        max_length=100,
-        blank=True,
-        null=True,
-        default=None,
-        unique=True,
-        help_text=(
-            "Nomba sub-account ID for payout settlement. Leave blank if this "
-            "partner doesn't have one — they'll default to Interswitch checkout."
-        ),
-    )
 
     def __str__(self):
         return str(self.name)
@@ -76,8 +76,6 @@ class DistributorProfile(models.Model):
         limit_choices_to={"partner_type": "distributor"},
     )
     commission_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
-    settlement_bank_account = models.CharField(max_length=64, blank=True)
-    settlement_bank_code = models.CharField(max_length=10, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def clean(self):
@@ -107,8 +105,6 @@ class ProviderProfile(models.Model):
         limit_choices_to={"partner_type": "provider"},
     )
     naicom_licence_number = models.CharField(max_length=50, blank=True)
-    settlement_bank_account = models.CharField(max_length=64, blank=True)
-    settlement_bank_code = models.CharField(max_length=10, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def clean(self):

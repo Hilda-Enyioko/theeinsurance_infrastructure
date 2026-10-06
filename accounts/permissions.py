@@ -1,4 +1,7 @@
 from rest_framework.permissions import BasePermission
+from rest_framework.exceptions import PermissionDenied
+from .models import CustomerKYC
+
 
 class IsStaffMember(BasePermission):
     """
@@ -56,6 +59,25 @@ class IsCustomer(BasePermission):
             and request.user.is_authenticated
             and request.user.role == "customer"
         )
+
+
+class IsKYCVerifiedCustomer(IsCustomer):
+    """Customers may browse plans without KYC, but can only purchase with APPROVED KYC."""
+
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        kyc = CustomerKYC.objects.filter(
+            customer__user=request.user, customer__partner=getattr(request, "partner", None)
+        ).first()
+        status_ = kyc.status if kyc else "not_submitted"
+        if status_ != "approved":
+            raise PermissionDenied({
+                "error": "Complete KYC verification before purchasing a plan.",
+                "code": "kyc_required",
+                "kyc_status": status_,
+            })
+        return True
 
 
 class IsProviderAdmin(BasePermission):
