@@ -36,6 +36,7 @@ class InsurancePlanCreateSerializer(serializers.ModelSerializer):
             "coverage_amount", "premium", "duration_months",
             "description", "visibility", "is_active",
         ]
+        extra_kwargs = {"is_active": {"default": True}}
 
     def validate_category(self, value):
         if not value.is_active:
@@ -66,10 +67,20 @@ class InsurancePlanCreateSerializer(serializers.ModelSerializer):
         return InsurancePlan.objects.create(provider=provider, **validated_data)
 
 
-# Distributor Access Grant Serializer
-# Replaces DistributorProviderAccessSerializer. Represents a single grant
-# in any state (pending/approved/rejected/revoked), covering both
-# provider-level and plan-level scope.
+class MarketplacePlanSerializer(InsurancePlanSerializer):
+    """Plan as seen by a distributor browsing the marketplace, with its own access status."""
+    access = serializers.SerializerMethodField()
+
+    class Meta(InsurancePlanSerializer.Meta):
+        fields = InsurancePlanSerializer.Meta.fields + ["access"]
+
+    @extend_schema_field({"type": "object", "properties": {
+        "status": {"type": "string", "enum": ["none", "pending", "approved", "rejected", "revoked", "withdrawn"]},
+        "via": {"type": "string", "nullable": True, "enum": ["plan", "provider"]}}})
+    def get_access(self, obj):
+        return best_access(self.context["access_index"], provider_id=obj.provider_id, plan_id=obj.id)
+
+
 class DistributorAccessGrantSerializer(serializers.ModelSerializer):
     distributor_name = serializers.CharField(source="distributor.name", read_only=True)
     provider_name = serializers.CharField(source="provider.name", read_only=True)
@@ -86,6 +97,10 @@ class DistributorAccessGrantSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+    def get_reviewed_by_email(self, obj):
+        return obj.reviewed_by.email if obj.reviewed_by_id else None
+    
+    @extend_schema_field(serializers.EmailField(allow_null=True))
     def get_reviewed_by_email(self, obj):
         return obj.reviewed_by.email if obj.reviewed_by_id else None
 

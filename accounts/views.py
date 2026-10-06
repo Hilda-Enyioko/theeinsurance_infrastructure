@@ -912,49 +912,6 @@ class StaffDistributorAccessView(APIView):
             "plan": g.plan.name if g.plan_id else None, "status": g.status, "requested_at": g.requested_at} for g in grants]})
 
     @extend_schema(
-        summary="Grant a distributor access directly (staff)",
-        description="`scope=provider` → all of the provider's plans. `scope=plan` → one plan (`plan_id` required, must belong to the provider).",
-        request=inline_serializer("DirectGrantRequest", {
-            "distributor_id": s.UUIDField(), "provider_id": s.UUIDField(),
-            "scope": s.ChoiceField(["provider", "plan"], default="provider"), "plan_id": s.UUIDField(required=False)}),
-        responses={201: inline_serializer("DirectGrantResponse", {"message": s.CharField(), "grant_id": s.UUIDField(), "status": s.CharField()}),
-                   400: error("Missing/invalid fields.", "distributor_id and provider_id are required."),
-                   404: error("Partner not found.", "Partner not found.")},
-        examples=[OpenApiExample("Plan-level", request_only=True, value={
-            "distributor_id": "3f6c1f4e-8a58-4b6e-9a53-2d6a7f0d9c11", "provider_id": "a7c2e9d4-5b3f-4e1a-9d8c-6b5a4f3e2d1c",
-            "scope": "plan", "plan_id": "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f"}),
-            OpenApiExample("Created", response_only=True, status_codes=["201"], value={
-                "message": "Access granted: QuickCover Ltd → Sunrise Assurance Plc",
-                "grant_id": "5e0d3c7a-2b1f-4a9e-8c6d-7f1e2d3c4b5a", "status": "approved"})],
-        tags=[Tag.ACCESS_GRANT],
-    )
-    def post(self, request):
-        from plans.models import DistributorAccessGrant, InsurancePlan
-        distributor_id, provider_id = request.data.get("distributor_id"), request.data.get("provider_id")
-        scope, plan_id = request.data.get("scope", "provider"), request.data.get("plan_id")
-        if not distributor_id or not provider_id:
-            return Response({"error": "distributor_id and provider_id are required."}, status=400)
-        if scope not in ("provider", "plan"):
-            return Response({"error": "scope must be 'provider' or 'plan'."}, status=400)
-        try:
-            distributor = Partner.objects.get(id=distributor_id, partner_type="distributor")
-            provider = Partner.objects.get(id=provider_id, partner_type="provider")
-        except Partner.DoesNotExist:
-            return Response({"error": "Partner not found."}, status=404)
-        plan = None
-        if scope == "plan":
-            plan = InsurancePlan.objects.filter(id=plan_id, provider=provider).first() if plan_id else None
-            if plan is None:
-                return Response({"error": "A valid plan_id for this provider is required."}, status=400)
-        try:
-            grant = DistributorAccessGrant.objects.grant_directly(
-                distributor=distributor, provider=provider, scope=scope, plan=plan, by=request.user)
-        except ValidationError as e:
-            return Response({"error": " ".join(e.messages)}, status=400)
-        return Response({"message": f"Access granted: {distributor.name} → {provider.name}",
-                         "grant_id": str(grant.id), "status": grant.status}, status=201)
-
-    @extend_schema(
         summary="Revoke all approved access for a distributor↔provider pair",
         request=inline_serializer("RevokeAccessRequest", {"distributor_id": s.UUIDField(), "provider_id": s.UUIDField()}),
         responses={200: MessageSerializer, 404: error("Nothing to revoke.", "No approved access found.")},
@@ -977,32 +934,27 @@ class StaffDistributorGrantReviewView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
-        summary="Approve / reject / revoke an access grant",
+        summary="Staff kill-switch: revoke an access grant",
+        description="Approving/rejecting is the **provider's** decision (`PATCH /partner/access-requests/{id}/`). "
+                    "Staff may only revoke an **approved** grant (e.g. fraud or compliance).",
         parameters=[OpenApiParameter("grant_id", OpenApiTypes.UUID, OpenApiParameter.PATH)],
-        request=inline_serializer("GrantReviewRequest", {"action": s.ChoiceField(["approve", "reject", "revoke"]), "note": s.CharField(required=False)}),
-        responses={200: inline_serializer("GrantReviewResponse", {"message": s.CharField(), "id": s.UUIDField()}),
-                   400: error("Bad action or invalid transition.", "action must be approve, reject or revoke."),
-                   404: error("Grant not found.", "Grant not found.")},
-        examples=[OpenApiExample("Reject", request_only=True, value={"action": "reject", "note": "Distributor not licensed for motor."}),
-                  OpenApiExample("OK", response_only=True, status_codes=["200"], value={"message": "Grant approved.", "id": "5e0d3c7a-2b1f-4a9e-8c6d-7f1e2d3c4b5a"})],
+        request=inline_serializer("StaffRevokeRequest", {"action": s.ChoiceField(["revoke"]), "note": s.CharField(required=False)}),
+        responses={200: inline_serializer("StaffGrantRevoked", {"message": s.CharField(), "id": s.UUIDField()}),
+                   400: error("Bad action or grant not approved.", "Staff can only revoke grants."),
+                   404: error("Not found.", "Grant not found.")},
+        examples=[OpenApiExample("Request", request_only=True, value={"action": "revoke", "note": "Distributor suspended for compliance."}),
+                  OpenApiExample("OK", response_only=True, status_codes=["200"], value={"message": "Grant revoked.", "id": "5e0d3c7a-2b1f-4a9e-8c6d-7f1e2d3c4b5a"})],
         tags=[Tag.ACCESS_GRANT],
     )
     def patch(self, request, grant_id):
         from plans.models import DistributorAccessGrant
-        action = request.data.get("action")
-        if action not in ("approve", "reject", "revoke"):
-            return Response({"error": "action must be approve, reject or revoke."}, status=400)
+        if request.data.get("action") != "revoke":
+            return Response({"error": "Staff can only revoke grants."}, status=400)
         grant = DistributorAccessGrant.objects.filter(id=grant_id).first()
         if not grant:
             return Response({"error": "Grant not found."}, status=404)
-        mgr = DistributorAccessGrant.objects
         try:
-            if action == "approve":
-                mgr.approve(grant, by=request.user)
-            elif action == "reject":
-                mgr.reject(grant, by=request.user, note=request.data.get("note", ""))
-            else:
-                mgr.revoke(grant, by=request.user)
+            DistributorAccessGrant.objects.revoke(grant, by=request.user, note=request.data.get("note", ""))
         except ValidationError as e:
             return Response({"error": " ".join(e.messages)}, status=400)
         return Response({"message": f"Grant {grant.status}.", "id": str(grant.id)})
