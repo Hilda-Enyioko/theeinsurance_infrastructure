@@ -15,7 +15,7 @@ EXEMPT_VIEW_NAMES = {
     "provider-plan-list-create", "provider-plan-detail",
     "provider-access-requests", "provider-access-request-review",
     "distributor-marketplace-providers", "distributor-marketplace-plans",
-    "distributor-access-grants", "distributor-access-grant-withdraw",
+    "distributor-access-grants", "distributor-access-grant-withdraw", "category-list"
     # Paystack
     "payments:paystack-webhook",
 }
