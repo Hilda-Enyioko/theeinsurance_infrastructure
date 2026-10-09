@@ -716,6 +716,7 @@ class StaffPartnerKYCReviewView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
+        operation_id="staff_kyc_partners_list_or_retrieve",
         summary="List partner KYC submissions / get one",
         description="Without `partner_id`: list filtered by `?status=` (default `pending`). With `partner_id`: single submission.",
         parameters=[
@@ -745,6 +746,7 @@ class StaffPartnerKYCReviewView(APIView):
             "rc_number": k.rc_number, "status": k.status, "submitted_at": k.submitted_at} for k in kyc_list]})
 
     @extend_schema(
+        operation_id="staff_kyc_partners_review_partial_update",
         summary="Approve or reject partner KYC",
         description=(
             "**approve** → partner becomes active (X-Partner-Key goes live) and a Resend email is sent. "
@@ -784,6 +786,7 @@ class StaffCustomerKYCReviewView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
+        operation_id="staff_kyc_customers_list",
         summary="List customer KYC submissions",
         parameters=[OpenApiParameter("status", OpenApiTypes.STR, OpenApiParameter.QUERY, enum=["pending", "approved", "rejected"])],
         responses={200: OpenApiResponse(response=OpenApiTypes.OBJECT, description="Submissions.", examples=[OpenApiExample("List", value={
@@ -800,6 +803,7 @@ class StaffCustomerKYCReviewView(APIView):
             "id_type": k.id_type, "status": k.status, "submitted_at": k.submitted_at} for k in qs]})
 
     @extend_schema(
+        operation_id="staff_kyc_customers_partial_update",
         summary="Approve or reject customer KYC",
         parameters=[OpenApiParameter("kyc_id", OpenApiTypes.UUID, OpenApiParameter.PATH)],
         request=inline_serializer("CustomerKYCReviewRequest", {"action": s.ChoiceField(["approve", "reject"]),

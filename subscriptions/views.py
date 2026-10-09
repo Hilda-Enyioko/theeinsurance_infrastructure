@@ -106,6 +106,7 @@ class CustomerSubscriptionListView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
+        operation_id="customer_subscriptions_list",
         summary="List my subscriptions",
         description="All of the logged-in customer's subscriptions with this partner, newest first. "
                     "`can_renew` / `can_cancel` tell the UI which buttons to show.",
@@ -397,6 +398,7 @@ class CustomerSubscriptionDetailView(APIView):
                 .filter(id=subscription_id, customer=profile).first())
 
     @extend_schema(
+        operation_id="customer_subscription_retrieve",
         summary="Get one subscription", auth=d.CUSTOMER_AUTH,
         responses={200: PolicySubscriptionSerializer, 404: ERR_SUB_404},
         examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value=d.CUSTOMER_SUB)],
@@ -480,6 +482,7 @@ class StaffSubscriptionListView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
+        operation_id="staff_subscriptions_list",
         summary="All subscriptions on the platform",
         description="Every subscription with the full money split. Filters combine with AND.",
         parameters=[d.STATUS_PARAM, d.CHANNEL_PARAM,
@@ -511,6 +514,7 @@ class StaffSubscriptionDetailView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
+        operation_id="staff_subscription_retrieve",
         summary="One subscription with its payment history",
         responses={200: inline_serializer("StaffSubscriptionDetail", {
             "subscription": StaffSubscriptionSerializer(), "transactions": TransactionSerializer(many=True)}),

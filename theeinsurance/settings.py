@@ -272,7 +272,26 @@ SPECTACULAR_SETTINGS = {
         {"name": "8. Claims", "description": "Claim submission and review."},
         {"name": "9. Webhooks", "description": "Partner webhooks and event subscriptions."},
         {"name": "10. Access Grant", "description": "Distributor access to provider plans."},
+        {"name": "11. Services", "description": "Service Accounts actions"}
     ],
+    "ENUM_NAME_OVERRIDES": {
+        # Models / Enums where field name is "status"
+        "PolicySubscriptionStatusEnum": "subscriptions.models.PolicySubscription.STATUS_CHOICES",  # or your actual enum path
+        "PartnerKYCStatusEnum": "accounts.models.PartnerKYC.STATUS_CHOICES",
+        "CustomerKYCStatusEnum": "accounts.models.CustomerKYC.STATUS_CHOICES",
+        "DistributorAccessGrantStatusEnum": "plans.models.DistributorAccessGrant.STATUS_CHOICES",
+        "TransactionStatusEnum": "payments.models.Transaction.PAYMENT_STATUS",
+
+        # Models / Enums where field name is "role"
+        "UserRoleEnum": "accounts.models.CustomUser.ROLE_CHOICES",
+        "PartnerAdminRoleEnum": "accounts.models.PartnerAdmin.ROLE_CHOICES",
+
+        # Inline request actions or query actions
+        "KYCReviewActionEnum": [
+            ("approve", "approve"),
+            ("reject", "reject"),
+        ],
+    },
 }
 
 RESEND_API_KEY = config("RESEND_API_KEY", default="")
