@@ -61,6 +61,7 @@ class CustomerClaimListCreateView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
+        operation_id="customer_claims_list",
         summary="List my claims",
         description="All claims the customer has filed with the partner in `X-Partner-Key`, newest first. "
                     "Includes `documents`, `payments` (masked account, receipt link) and `settlement_on_file`.",
@@ -141,6 +142,7 @@ class CustomerClaimDetailView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
+        operation_id="customer_claims_retrieve",
         summary="Get a claim",
         description="Single claim owned by the caller. Another customer's claim returns 404, never 403.",
         auth=PARTNER_KEY_AUTH,
@@ -324,6 +326,7 @@ class ProviderClaimListView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
+        operation_id="provider_claims_list",
         summary="List claims for my plans",
         description="JWT only (no `X-Partner-Key`). Providers only see claims that have cleared the AI/staff gate "
                     "(`forwarded_at` set), never `submitted`, `ai_check_pending` or unreviewed `flagged` claims. "
@@ -351,6 +354,7 @@ class ProviderClaimReviewView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
+        operation_id="provider_claims_retrieve",
         summary="Get a claim for review",
         parameters=[CLAIM_ID],
         responses={200: ClaimSerializer, 404: error("Not found, or not yet forwarded to this provider.", "Claim not found.")},
@@ -492,6 +496,7 @@ class StaffClaimListView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
+        operation_id="staff_claims_list",
         summary="List all claims",
         description="Every claim across all partners, including `ai_result`. Triage queue: `?status=flagged`.",
         parameters=[STATUS_PARAM],
@@ -515,6 +520,7 @@ class StaffClaimReviewView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
+        operation_id="staff_claims_retrieve",
         summary="Get any claim",
         parameters=[CLAIM_ID],
         responses={200: ClaimSerializer, 404: error("Claim not found.", "Claim not found.")},

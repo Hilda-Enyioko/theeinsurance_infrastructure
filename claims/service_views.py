@@ -1,6 +1,6 @@
 from django.db import transaction
 from django.utils import timezone
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -23,11 +23,29 @@ class ReceiptSerializer(serializers.Serializer):
     receipt_url = serializers.URLField(max_length=500)
 
 
+StatusResponse = inline_serializer(
+    name="ServiceClaimStatusResponse",
+    fields={
+        "status": serializers.CharField(),
+        "replayed": serializers.BooleanField(required=False),
+    },
+)
+
+ErrorResponse = inline_serializer(
+    name="ServiceClaimErrorResponse",
+    fields={"error": serializers.CharField()},
+)
+
+
 class ServiceClaimAiResultView(APIView):
     permission_classes = [IsServiceAccount]
 
-    @extend_schema(request=AiResultSerializer, tags=["Service: Claims"],
-                   summary="Store AI check result (n8n)")
+    @extend_schema(
+        request=AiResultSerializer,
+        responses={200: StatusResponse, 404: ErrorResponse},
+        tags=["Service: Claims"],
+        summary="Store AI check result (n8n)",
+    )
     def post(self, request, claim_id):
         ser = AiResultSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
@@ -59,8 +77,12 @@ class ServiceClaimAiResultView(APIView):
 class ServiceClaimReceiptView(APIView):
     permission_classes = [IsServiceAccount]
 
-    @extend_schema(request=ReceiptSerializer, tags=["Service: Claims"],
-                   summary="Attach settlement receipt (n8n)")
+    @extend_schema(
+        request=ReceiptSerializer,
+        responses={200: StatusResponse, 404: ErrorResponse, 409: ErrorResponse},
+        tags=["Service: Claims"],
+        summary="Attach settlement receipt (n8n)",
+    )
     def post(self, request, claim_id):
         ser = ReceiptSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
@@ -85,8 +107,12 @@ class ServiceClaimReceiptView(APIView):
 class ServiceClaimNotifiedView(APIView):
     permission_classes = [IsServiceAccount]
 
-    @extend_schema(request=None, tags=["Service: Claims"],
-                   summary="Mark customer and provider as notified (n8n)")
+    @extend_schema(
+        request=None,
+        responses={200: StatusResponse, 404: ErrorResponse, 409: ErrorResponse},
+        tags=["Service: Claims"],
+        summary="Mark customer and provider as notified (n8n)",
+    )
     def post(self, request, claim_id):
         with transaction.atomic():
             claim = Claim.objects.select_for_update().filter(id=claim_id).first()
