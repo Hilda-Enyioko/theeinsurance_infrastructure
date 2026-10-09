@@ -12,6 +12,4 @@ if [ -n "$DIRECT_DATABASE_URL" ]; then
     export DATABASE_URL="$DIRECT_DATABASE_URL"
 fi
 
-# Reset plans app migration state and apply all migrations
-python manage.py migrate plans zero
 python manage.py migrate

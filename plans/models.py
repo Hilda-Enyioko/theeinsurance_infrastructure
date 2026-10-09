@@ -41,12 +41,9 @@ class InsurancePlan(models.Model):
         ("standard", "Standard"),  # travel only
     ]
 
-    # BR-002: every plan has an explicit visibility state, since
-    # DistributorAccessGrant below depends on it directly.
     VISIBILITY_CHOICES = [
-        ("private", "Private"),
-        ("public", "Public (Request Required)"),
-        ("shared", "Shared"),
+        ("private", "Private (only my own customers)"),
+        ("public", "Public (distributors can request access)"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -110,13 +107,94 @@ class InsurancePlan(models.Model):
         return f"{self.name} - {self.provider.name}"
 
 
-# ---Distributor Access---
+# Distributor Access Grant
 
-class DistributorProviderAccess(models.Model):
+class DistributorAccessGrantManager(models.Manager):
+    STAFF_ROLES = ("super_admin", "support_admin")
+
+    @staticmethod
+    def _can_review(grant, by):
+        """The grant's PROVIDER (full partner_admin) decides. Staff may only revoke (kill-switch)."""
+        profile = getattr(by, "partner_admin_profile", None)
+        return bool(profile and profile.partner_id == grant.provider_id and profile.role == "partner_admin")
+
+    def _require(self, grant, by, *, allow_staff=False):
+        is_staff = getattr(by, "role", None) in self.STAFF_ROLES
+        if not (self._can_review(grant, by) or (allow_staff and is_staff)):
+            raise ValidationError("Only the provider that owns this plan can review access requests.")
+
+    def request_access(self, *, distributor, provider, scope, plan=None):
+        if distributor.partner_type != "distributor":
+            raise ValidationError("distributor must be a Partner of type 'distributor'.")
+        if provider.partner_type != "provider" or not provider.is_active:
+            raise ValidationError("Provider is not available.")
+        if scope == "plan" and plan is None:
+            raise ValidationError("plan is required for a plan-level access request.")
+        if scope == "provider" and plan is not None:
+            raise ValidationError("plan must not be set for a provider-level access request.")
+        if plan is not None:
+            if plan.provider_id != provider.id:
+                raise ValidationError("plan does not belong to the specified provider.")
+            if plan.visibility != "public" or not plan.is_active:
+                raise ValidationError("Access can only be requested for active, public plans.")
+
+        lookup = dict(distributor=distributor, provider=provider, scope=scope, plan=plan)
+        existing = self.filter(**lookup).first()
+        if existing:
+            if existing.status in ("approved", "pending"):
+                return existing                       # no-op
+            existing.status, existing.reviewed_by, existing.reviewed_at, existing.review_note = "pending", None, None, ""
+            existing.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_note"])
+            return existing
+        return self.create(**lookup, status="pending")
+
+    def approve(self, grant, *, by):
+        self._require(grant, by)
+        if grant.status != "pending":
+            raise ValidationError(f"Only a pending request can be approved (current status: {grant.status}).")
+        grant.status, grant.reviewed_by, grant.reviewed_at = "approved", by, timezone.now()
+        grant.save(update_fields=["status", "reviewed_by", "reviewed_at"])
+        return grant
+
+    def reject(self, grant, *, by, note=""):
+        self._require(grant, by)
+        if grant.status != "pending":
+            raise ValidationError(f"Only a pending request can be rejected (current status: {grant.status}).")
+        if not note.strip():
+            raise ValidationError("A note is required when rejecting.")
+        grant.status, grant.reviewed_by, grant.reviewed_at, grant.review_note = "rejected", by, timezone.now(), note.strip()
+        grant.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_note"])
+        return grant
+
+    def revoke(self, grant, *, by, note=""):
+        self._require(grant, by, allow_staff=True)    # provider OR staff kill-switch
+        if grant.status != "approved":
+            raise ValidationError(f"Only an approved grant can be revoked (current status: {grant.status}).")
+        grant.status, grant.reviewed_by, grant.reviewed_at = "revoked", by, timezone.now()
+        if note:
+            grant.review_note = note
+        grant.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_note"])
+        return grant
+
+    def withdraw(self, grant):  # unchanged
+        if grant.status != "pending":
+            raise ValidationError(f"Only a pending request can be withdrawn (current status: {grant.status}).")
+        grant.status = "withdrawn"
+        grant.save(update_fields=["status"])
+        return grant
+
+
+class DistributorAccessGrant(models.Model):
+    SCOPE_CHOICES = [
+        ("provider", "Provider-Level"),
+        ("plan", "Plan-Level"),
+    ]
     STATUS_CHOICES = [
         ("pending", "Pending"),
         ("approved", "Approved"),
         ("rejected", "Rejected"),
+        ("revoked", "Revoked"),      
+        ("withdrawn", "Withdrawn"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -132,10 +210,24 @@ class DistributorProviderAccess(models.Model):
         related_name="granted_distributor_access",
         limit_choices_to={"partner_type": "provider"},
     )
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
-    is_active = models.BooleanField(default=True)
-    granted_at = models.DateTimeField(auto_now_add=True)
+    plan = models.ForeignKey(
+        InsurancePlan,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="access_grants",
+        help_text="Null for provider-level grants; set for plan-level grants.",
+    )
+    scope = models.CharField(max_length=10, choices=SCOPE_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending", db_index=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    reviewed_by = models.ForeignKey(
+        "accounts.CustomUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
     reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_note = models.TextField(blank=True)
+
+    objects = DistributorAccessGrantManager()
 
     class Meta:
         constraints = [
@@ -159,7 +251,9 @@ class DistributorProviderAccess(models.Model):
             raise ValidationError("plan must be blank when scope='provider'.")
         if self.plan_id and self.plan.provider_id != self.provider_id:
             raise ValidationError("plan must belong to the specified provider.")
-        if self.plan_id and self.plan.visibility == "private":
+        # Only on creation. Otherwise, once a provider flips a plan to private you could never
+        # revoke/withdraw the old grant, because save() runs full_clean().
+        if self._state.adding and self.plan_id and self.plan.visibility == "private":
             raise ValidationError("Cannot grant distributor access to a Private plan.")
 
     def save(self, *args, **kwargs):
@@ -167,4 +261,5 @@ class DistributorProviderAccess(models.Model):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.distributor.name} → {self.provider.name} ({self.status})"
+        target = self.plan.name if self.plan_id else f"{self.provider.name} (all plans)"
+        return f"{self.distributor.name} → {target} [{self.status}]"

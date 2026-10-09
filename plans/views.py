@@ -1,225 +1,222 @@
+"""Plans, provider plan management, distributor marketplace and access grants."""
+
+import uuid
+from decimal import Decimal, InvalidOperation
+
 from django.core.exceptions import ValidationError
-from django.db.models import Q
-from drf_spectacular.utils import (
-    OpenApiParameter,
-    OpenApiTypes,
-    extend_schema,
-    OpenApiResponse,
-)
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import AllowAny
-from rest_framework.generics import ListAPIView
-from rest_framework import serializers, status
-from django.db.models import Q
-from drf_spectacular.utils import (
-    extend_schema,
-    OpenApiParameter,
-    OpenApiResponse,
-    extend_schema_view,
-    inline_serializer,
-)
+from django.db.models import Count, Q
 from drf_spectacular.types import OpenApiTypes
-
-from .models import InsuranceCategory, InsurancePlan, DistributorAccessGrant
-from .serializers import (
-    InsuranceCategorySerializer,
-    InsurancePlanSerializer,
-    InsurancePlanCreateSerializer,
-    DistributorProviderAccessSerializer,
-    ProviderBrowseSerializer,
-    DistributorPlanBrowseSerializer,
-    DistributorAccessRequestSerializer,
+from drf_spectacular.utils import (
+    OpenApiExample, OpenApiParameter, OpenApiResponse, extend_schema, inline_serializer,
 )
+from rest_framework import serializers as s
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
 from accounts.permissions import (
-    IsProviderAdmin,
-    IsDistributorAdmin,
-    IsServiceAccount,
+    IsCustomerOfPartner, IsDistributorAdmin, IsProviderAdmin, IsServiceAccount,
 )
-from core.throttles import PartnerRateThrottle
+from accounts.utils import get_partner_from_user, is_full_partner_admin
+from core.docs import MessageSerializer, Tag, error, validation_error
 from core.models import Partner
+from core.throttles import PartnerRateThrottle
+
+from .models import DistributorAccessGrant, InsuranceCategory, InsurancePlan
+from .selectors import (
+    best_access, distributor_access_index, marketplace_plans, plans_visible_to_partner,
+)
+from .serializers import (
+    DistributorAccessGrantSerializer, DistributorAccessRequestSerializer,
+    InsuranceCategorySerializer, InsurancePlanCreateSerializer, InsurancePlanSerializer,
+    MarketplacePlanSerializer,
+)
+
+# ------------------------------------------------------------------ doc fixtures
+CATEGORY_ID = "0b6f1d52-7c1a-4f0e-9d3a-5e2c8b7a1f10"
+PROVIDER_ID = "a7c2e9d4-5b3f-4e1a-9d8c-6b5a4f3e2d1c"
+PLAN_ID = "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f"
+GRANT_ID = "5e0d3c7a-2b1f-4a9e-8c6d-7f1e2d3c4b5a"
+
+PLAN_EXAMPLE = {
+    "id": PLAN_ID, "name": "Motor Comprehensive Plus", "provider": PROVIDER_ID,
+    "provider_name": "Sunrise Assurance Plc", "category": CATEGORY_ID, "category_name": "Motor",
+    "coverage_level": "comprehensive", "coverage_amount": "5000000.00", "premium": "85000.00",
+    "duration_months": 12, "description": "Full cover incl. theft, fire, third party and flood damage.",
+    "visibility": "public", "visibility_display": "Public (distributors can request access)",
+    "is_active": True, "created_at": "2026-10-01T09:00:00Z", "updated_at": "2026-10-03T14:20:00Z",
+}
+GRANT_EXAMPLE = {
+    "id": GRANT_ID, "distributor": "3f6c1f4e-8a58-4b6e-9a53-2d6a7f0d9c11", "distributor_name": "QuickCover Ltd",
+    "provider": PROVIDER_ID, "provider_name": "Sunrise Assurance Plc", "plan": PLAN_ID,
+    "plan_name": "Motor Comprehensive Plus", "scope": "plan", "status": "pending",
+    "requested_at": "2026-10-06T09:00:00Z", "reviewed_by_email": None, "reviewed_at": None, "review_note": "",
+}
+
+PlanListResponse = inline_serializer("PlanListResponse", {"plans": InsurancePlanSerializer(many=True)})
+MarketplacePlanListResponse = inline_serializer("MarketplacePlanListResponse", {"plans": MarketplacePlanSerializer(many=True)})
+GrantListResponse = inline_serializer("AccessGrantListResponse", {"access_grants": DistributorAccessGrantSerializer(many=True)})
+
+ERR_KEY = error("Missing, invalid or inactive `X-Partner-Key`.", "Invalid or inactive partner key.")
+ERR_AUTH = error("Not authenticated.", "Authentication credentials were not provided.", key="detail")
+
+PLAN_FILTERS = [
+    OpenApiParameter("category", OpenApiTypes.STR, OpenApiParameter.QUERY, enum=[c[0] for c in InsuranceCategory.CATEGORY_CHOICES], description="Category name."),
+    OpenApiParameter("coverage_level", OpenApiTypes.STR, OpenApiParameter.QUERY, enum=[c[0] for c in InsurancePlan.COVERAGE_LEVELS]),
+    OpenApiParameter("min_premium", OpenApiTypes.DECIMAL, OpenApiParameter.QUERY, description="Inclusive, in NGN."),
+    OpenApiParameter("max_premium", OpenApiTypes.DECIMAL, OpenApiParameter.QUERY, description="Inclusive, in NGN."),
+    OpenApiParameter("search", OpenApiTypes.STR, OpenApiParameter.QUERY, description="Matches plan name or description."),
+    OpenApiParameter("sort_by", OpenApiTypes.STR, OpenApiParameter.QUERY, default="-created_at",
+                     enum=["premium", "-premium", "created_at", "-created_at", "name"]),
+]
+ALLOWED_SORTS = {"premium", "-premium", "created_at", "-created_at", "name"}
 
 
-# Helpers
-
-def _accessible_plan_ids_and_providers(distributor):
-    """
-    A distributor can see a plan if either (a) it
-    has an approved plan-level grant, or (b) it has an approved
-    provider-level grant for that plan's provider AND the plan isn't
-    Private. Returns the provider-id and plan-id sets used to build the
-    queryset filter — computed once per request rather than calling
-    InsurancePlan.is_accessible_to() per row (which would be N+1).
-    """
-    approved = DistributorAccessGrant.objects.filter(distributor=distributor, status="approved")
-    provider_ids = approved.filter(scope="provider").values_list("provider_id", flat=True)
-    plan_ids = approved.filter(scope="plan").values_list("plan_id", flat=True)
-    return list(provider_ids), list(plan_ids)
+def _decimal(params, key):
+    raw = params.get(key)
+    if raw in (None, ""):
+        return None
+    try:
+        return Decimal(raw)
+    except InvalidOperation:
+        raise s.ValidationError({key: ["Must be a number."]})
 
 
-# Categories
+def apply_plan_filters(plans, params):
+    if v := params.get("category"):
+        plans = plans.filter(category__name=v)
+    if v := params.get("coverage_level"):
+        plans = plans.filter(coverage_level=v)
+    if (v := _decimal(params, "min_premium")) is not None:
+        plans = plans.filter(premium__gte=v)
+    if (v := _decimal(params, "max_premium")) is not None:
+        plans = plans.filter(premium__lte=v)
+    if v := params.get("search"):
+        plans = plans.filter(Q(name__icontains=v) | Q(description__icontains=v))
+    if v := params.get("provider_id"):
+        try:
+            plans = plans.filter(provider_id=uuid.UUID(v))
+        except ValueError:
+            raise s.ValidationError({"provider_id": ["Must be a valid UUID."]})
+    sort_by = params.get("sort_by", "-created_at")
+    return plans.order_by(sort_by if sort_by in ALLOWED_SORTS else "-created_at")
+
+
+# ================================================================ 6. PLANS: storefront (customers)
 class InsuranceCategoryListView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
         summary="List active insurance categories",
-        responses={200: OpenApiResponse(description="A list of active categories.")},
-        tags=["Insurance Categories"]
+        description="Reference data for filters and for `category` when creating a plan. Requires `X-Partner-Key`.",
+        auth=[{"PartnerKey": []}],
+        responses={200: inline_serializer("CategoryListResponse", {"categories": InsuranceCategorySerializer(many=True)}), 401: ERR_KEY},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value={"categories": [
+            {"id": CATEGORY_ID, "name": "motor", "description": "Vehicle insurance", "is_active": True, "created_at": "2026-09-01T00:00:00Z"}]})],
+        tags=[Tag.PLANS],
     )
     def get(self, request):
-        categories = InsuranceCategory.objects.filter(is_active=True)
-        serializer = InsuranceCategorySerializer(categories, many=True)
-        return Response({"categories": serializer.data})
+        return Response({"categories": InsuranceCategorySerializer(InsuranceCategory.objects.filter(is_active=True), many=True).data})
 
 
-# Plans — Customer / Distributor Facing
 class InsurancePlanListView(APIView):
-    """
-    Public endpoint, scoped via X-Partner-Key middleware:
-    - Provider partner: their own active plans only.
-    - Distributor partner: plans they hold an approved grant for
-      (provider-level or plan-level), excluding anything Private.
-    """
-    permission_classes = [AllowAny]
+    permission_classes = [IsCustomerOfPartner]
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
-        summary="List and filter active insurance plans",
-        parameters=[
-            OpenApiParameter(name="category", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter by category name"),
-            OpenApiParameter(name="coverage_level", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter by coverage level"),
-            OpenApiParameter(name="min_premium", type=OpenApiTypes.DECIMAL, location=OpenApiParameter.QUERY, description="Minimum premium price"),
-            OpenApiParameter(name="max_premium", type=OpenApiTypes.DECIMAL, location=OpenApiParameter.QUERY, description="Maximum premium price"),
-            OpenApiParameter(name="search", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Search term for name or description"),
-            OpenApiParameter(name="sort_by", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, default="-created_at", description="Sort fields: premium, -premium, created_at, -created_at, name"),
-        ],
-        responses={200: OpenApiResponse(description="Filtered list of insurance plans.")},
-        tags=["Insurance Plans"]
+        summary="Browse plans (customer storefront)",
+        description=(
+            "Returns the plans for the partner identified by `X-Partner-Key`, and only for customers who registered with that partner.\n\n"
+            "- **Provider storefront:** all of that provider's active plans (public and private).\n"
+            "- **Distributor storefront:** active **public** plans from providers the distributor has an **approved** "
+            "access grant for (provider-level grants include plans the provider creates in future; plan-level grants cover one plan).\n\n"
+            "Browsing needs no KYC. Subscribing does."
+        ),
+        auth=[{"BearerAuth": [], "PartnerKey": []}],
+        parameters=PLAN_FILTERS,
+        responses={200: PlanListResponse, 400: validation_error("min_premium", "Must be a number."),
+                   401: ERR_KEY, 403: error("Caller is not a customer of this partner.", "You are not registered with this partner.", key="detail")},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value={"plans": [PLAN_EXAMPLE]})],
+        tags=[Tag.PLANS],
     )
     def get(self, request):
-        partner = request.partner
-
-        if partner.partner_type == "provider":
-            plans = InsurancePlan.objects.filter(provider=partner, is_active=True)
-        else:
-            provider_ids, plan_ids = _accessible_plan_ids_and_providers(partner)
-            plans = InsurancePlan.objects.filter(is_active=True).exclude(
-                visibility="private"
-            ).filter(
-                Q(provider_id__in=provider_ids) | Q(id__in=plan_ids)
-            )
-
-        category = request.query_params.get("category")
-        coverage_level = request.query_params.get("coverage_level")
-        min_premium = request.query_params.get("min_premium")
-        max_premium = request.query_params.get("max_premium")
-        search = request.query_params.get("search")
-
-        if category:
-            plans = plans.filter(category__name=category)
-        if coverage_level:
-            plans = plans.filter(coverage_level=coverage_level)
-        if min_premium:
-            plans = plans.filter(premium__gte=min_premium)
-        if max_premium:
-            plans = plans.filter(premium__lte=max_premium)
-        if search:
-            plans = plans.filter(
-                Q(name__icontains=search) | Q(description__icontains=search)
-            )
-
-        sort_by = request.query_params.get("sort_by", "-created_at")
-        allowed_sorts = ["premium", "-premium", "created_at", "-created_at", "name"]
-        if sort_by in allowed_sorts:
-            plans = plans.order_by(sort_by)
-
-        serializer = InsurancePlanSerializer(plans, many=True)
-        return Response({"plans": serializer.data})
+        plans = plans_visible_to_partner(request.partner).select_related("provider", "category")
+        plans = apply_plan_filters(plans, request.query_params)
+        return Response({"plans": InsurancePlanSerializer(plans, many=True).data})
 
 
 class InsurancePlanDetailView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsCustomerOfPartner]
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
         operation_id="plans_retrieve_by_id",
-        summary="Retrieve an active plan detail",
-        responses={
-            200: InsurancePlanSerializer,
-            404: OpenApiResponse(description="Plan not found or access denied.")
-        },
-        tags=["Insurance Plans"]
+        summary="Get one plan (customer storefront)",
+        description="Same visibility rules as the list. A plan outside the caller's storefront returns 404 (never 403) so IDs can't be probed.",
+        auth=[{"BearerAuth": [], "PartnerKey": []}],
+        responses={200: InsurancePlanSerializer, 401: ERR_KEY, 403: error("Not a customer of this partner.", "You are not registered with this partner.", key="detail"),
+                   404: error("Not available to this storefront.", "Plan not found.")},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value=PLAN_EXAMPLE)],
+        tags=[Tag.PLANS],
     )
     def get(self, request, plan_id):
-        partner = request.partner
-
-        try:
-            plan = InsurancePlan.objects.select_related("provider").get(id=plan_id, is_active=True)
-        except InsurancePlan.DoesNotExist:
+        plan = plans_visible_to_partner(request.partner).select_related("provider", "category").filter(id=plan_id).first()
+        if plan is None:
             return Response({"error": "Plan not found."}, status=404)
-
-        if partner.partner_type == "distributor" and not plan.is_accessible_to(partner):
-            return Response({"error": "Plan not found."}, status=404)
-
-        serializer = InsurancePlanSerializer(plan)
-        return Response(serializer.data)
+        return Response(InsurancePlanSerializer(plan).data)
 
 
-# Plans — Provider Team
+# ================================================================ 2. PROVIDERS: manage own plans
 class ProviderPlanListCreateView(APIView):
-    """
-    Any provider team member (partner_admin / support_partner_admin /
-    partner_viewer) can list plans. Only partner_admin can create one.
-    """
     permission_classes = [IsProviderAdmin]
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
-        summary="Provider Admin: List managed plans",
-        parameters=[
-            OpenApiParameter(name="status", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter by status: 'active' or 'inactive'"),
-        ],
-        responses={200: OpenApiResponse(
-            description="List of insurance plans for the authenticated provider."
-        )},
-        tags=["Insurance Plans"]
+        summary="List my plans",
+        description="Providers only ever see **their own** plans (active and inactive, public and private). Any provider team member may call this.",
+        parameters=[OpenApiParameter("status", OpenApiTypes.STR, OpenApiParameter.QUERY, enum=["active", "inactive"])],
+        responses={200: PlanListResponse, 401: ERR_AUTH},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value={"plans": [PLAN_EXAMPLE]})],
+        tags=[Tag.PROVIDERS],
     )
     def get(self, request):
         partner = get_partner_from_user(request.user)
-        plans = InsurancePlan.objects.filter(provider=partner)
-
-        status_filter = request.query_params.get("status")
-        if status_filter == "active":
+        plans = InsurancePlan.objects.filter(provider=partner).select_related("provider", "category")
+        if request.query_params.get("status") == "active":
             plans = plans.filter(is_active=True)
-        elif status_filter == "inactive":
+        elif request.query_params.get("status") == "inactive":
             plans = plans.filter(is_active=False)
-
-        serializer = InsurancePlanSerializer(plans, many=True)
-        return Response({"plans": serializer.data})
+        return Response({"plans": InsurancePlanSerializer(plans, many=True).data})
 
     @extend_schema(
-        summary="Provider Admin: Create a new plan",
+        summary="Create a plan",
+        description=(
+            "Partner admin only, and the provider must be KYC-verified.\n\n"
+            "`visibility`: **private** = only your own customers/platform can see it; **public** = distributors can find it in the marketplace and request access.\n"
+            "`is_active` defaults to `true`. `category` is a category UUID from `GET /categories/`.\n\n"
+            "Rules: travel plans are forced to `coverage_level=standard`; motor plans must use `third_party`, `tp_fire_theft` or `comprehensive`."
+        ),
         request=InsurancePlanCreateSerializer,
-        responses={
-            201: InsurancePlanSerializer,
-            400: OpenApiResponse(description="Validation error data.")
-        },
-        tags=["Insurance Plans"]
+        responses={201: InsurancePlanSerializer,
+                   400: validation_error("coverage_level", "Motor plans must specify third_party, tp_fire_theft, or comprehensive."),
+                   403: error("Not a full partner_admin, or provider not verified.", "Only a partner_admin can create plans.")},
+        examples=[OpenApiExample("Request", request_only=True, value={
+            "name": "Motor Comprehensive Plus", "category": CATEGORY_ID, "coverage_level": "comprehensive",
+            "coverage_amount": "5000000.00", "premium": "85000.00", "duration_months": 12,
+            "description": "Full cover incl. theft, fire, third party and flood damage.", "visibility": "public"}),
+            OpenApiExample("Created", response_only=True, status_codes=["201"], value=PLAN_EXAMPLE)],
+        tags=[Tag.PROVIDERS],
     )
     def post(self, request):
         if not is_full_partner_admin(request.user):
             return Response({"error": "Only a partner_admin can create plans."}, status=403)
-
         partner = get_partner_from_user(request.user)
-        serializer = InsurancePlanCreateSerializer(
-            data=request.data,
-            context={"provider": partner}
-        )
-        if serializer.is_valid():
-            plan = serializer.save()
-            return Response(InsurancePlanSerializer(plan).data, status=201)
-        return Response(serializer.errors, status=400)
+        if not partner.is_active:
+            return Response({"error": "Your account must be KYC-verified before you can create plans."}, status=403)
+        serializer = InsurancePlanCreateSerializer(data=request.data, context={"provider": partner})
+        serializer.is_valid(raise_exception=True)
+        return Response(InsurancePlanSerializer(serializer.save()).data, status=201)
 
 
 class ProviderPlanDetailView(APIView):
@@ -227,313 +224,295 @@ class ProviderPlanDetailView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     def get_object(self, plan_id, partner):
-        try:
-            return InsurancePlan.objects.get(id=plan_id, provider=partner)
-        except InsurancePlan.DoesNotExist:
-            return None
+        return InsurancePlan.objects.select_related("provider", "category").filter(id=plan_id, provider=partner).first()
 
     @extend_schema(
-        operation_id="partner_plans_retrieve_by_id",
-        summary="Provider Admin: Retrieve a managed plan details",
-        responses={
-            200: InsurancePlanSerializer,
-            404: OpenApiResponse(description="Plan not found.")
-        },
-        tags=["Insurance Plans"]
+        operation_id="partner_plans_retrieve_by_id", summary="Get one of my plans",
+        responses={200: InsurancePlanSerializer, 404: error("Not found or not yours.", "Plan not found.")},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value=PLAN_EXAMPLE)],
+        tags=[Tag.PROVIDERS],
     )
     def get(self, request, plan_id):
-        partner = get_partner_from_user(request.user)
-        plan = self.get_object(plan_id, partner)
+        plan = self.get_object(plan_id, get_partner_from_user(request.user))
         if not plan:
             return Response({"error": "Plan not found."}, status=404)
         return Response(InsurancePlanSerializer(plan).data)
 
     @extend_schema(
-        summary="Provider Admin: Partially update a plan",
+        summary="Update a plan (partial)",
+        description=(
+            "Partner admin only. Send only the fields to change.\n\n"
+            "**Changing `visibility` to `private`** immediately hides the plan from every distributor, even those with a grant "
+            "(the grant is kept and works again if you set it back to `public`). Existing subscriptions are not affected."
+        ),
         request=InsurancePlanCreateSerializer,
-        responses={
-            200: InsurancePlanSerializer,
-            400: OpenApiResponse(description="Validation error data."),
-            404: OpenApiResponse(description="Plan not found.")
-        },
-        tags=["Insurance Plans"]
+        responses={200: InsurancePlanSerializer, 400: validation_error("premium", "A valid number is required."),
+                   403: error("Not a full partner_admin.", "Only a partner_admin can edit plans."), 404: error("Not found.", "Plan not found.")},
+        examples=[OpenApiExample("Make private", request_only=True, value={"visibility": "private"}),
+                  OpenApiExample("Reprice", request_only=True, value={"premium": "90000.00"})],
+        tags=[Tag.PROVIDERS],
     )
     def patch(self, request, plan_id):
         if not is_full_partner_admin(request.user):
             return Response({"error": "Only a partner_admin can edit plans."}, status=403)
-
         partner = get_partner_from_user(request.user)
         plan = self.get_object(plan_id, partner)
         if not plan:
             return Response({"error": "Plan not found."}, status=404)
-
-        serializer = InsurancePlanCreateSerializer(
-            plan, data=request.data, partial=True,
-            context={"provider": partner}
-        )
-        if serializer.is_valid():
-            plan = serializer.save()
-            return Response(InsurancePlanSerializer(plan).data)
-        return Response(serializer.errors, status=400)
+        serializer = InsurancePlanCreateSerializer(plan, data=request.data, partial=True, context={"provider": partner})
+        serializer.is_valid(raise_exception=True)
+        return Response(InsurancePlanSerializer(serializer.save()).data)
 
     @extend_schema(
-        summary="Provider Admin: Soft-delete a plan",
-        responses={
-            200: OpenApiResponse(description="Plan deactivated successfully."),
-            404: OpenApiResponse(description="Plan not found.")
-        },
-        tags=["Insurance Plans"]
+        summary="Deactivate a plan (soft delete)", request=None,
+        responses={200: MessageSerializer, 403: error("Not a full partner_admin.", "Only a partner_admin can deactivate plans."),
+                   404: error("Not found.", "Plan not found.")},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value={"message": "Plan deactivated successfully."})],
+        tags=[Tag.PROVIDERS],
     )
     def delete(self, request, plan_id):
         if not is_full_partner_admin(request.user):
             return Response({"error": "Only a partner_admin can deactivate plans."}, status=403)
-
-        partner = get_partner_from_user(request.user)
-        plan = self.get_object(plan_id, partner)
+        plan = self.get_object(plan_id, get_partner_from_user(request.user))
         if not plan:
             return Response({"error": "Plan not found."}, status=404)
-
         plan.is_active = False
         plan.save()
         return Response({"message": "Plan deactivated successfully."})
 
 
-# Provider — Access Requests Inbox
+# ================================================================ 2 + 10. PROVIDER reviews distributor access
 class ProviderAccessRequestListView(APIView):
-    """
-    Providers view distributor access requests targeting them. Approval
-    itself still happens via accounts.StaffDistributorAccessView (staff
-    review is required) — this view is read-only visibility so a provider
-    can see who has requested access before staff acts on it, and see the 
-    outcome afterward.
-    """
     permission_classes = [IsProviderAdmin]
     throttle_classes = [PartnerRateThrottle]
 
+    @extend_schema(
+        summary="Inbox: distributor access requests to my plans",
+        description="All requests addressed to the logged-in provider. Filter with `?status=pending` for the review queue.",
+        parameters=[OpenApiParameter("status", OpenApiTypes.STR, OpenApiParameter.QUERY,
+                                     enum=[c[0] for c in DistributorAccessGrant.STATUS_CHOICES])],
+        responses={200: inline_serializer("AccessRequestListResponse", {"access_requests": DistributorAccessGrantSerializer(many=True)})},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value={"access_requests": [GRANT_EXAMPLE]})],
+        tags=[Tag.PROVIDERS, Tag.ACCESS_GRANT],
+    )
     def get(self, request):
         partner = get_partner_from_user(request.user)
-        grants = DistributorAccessGrant.objects.filter(
-            provider=partner
-        ).select_related("distributor", "plan").order_by("-requested_at")
-
-        status_filter = request.query_params.get("status")
-        if status_filter:
-            grants = grants.filter(status=status_filter)
-
-        serializer = DistributorAccessGrantSerializer(grants, many=True)
-        return Response({"access_requests": serializer.data})
+        grants = (DistributorAccessGrant.objects.filter(provider=partner)
+                  .select_related("distributor", "provider", "plan", "reviewed_by").order_by("-requested_at"))
+        if f := request.query_params.get("status"):
+            grants = grants.filter(status=f)
+        return Response({"access_requests": DistributorAccessGrantSerializer(grants, many=True).data})
 
 
-# Distributor — Browse, Request, Track, Withdraw Access
-class DistributorAccessGrantView(APIView):
-    """
-    Distributors request provider-level or plan-level access, list their
-    own requests (any status), and withdraw a still-pending request.
-    Approval/rejection remain staff-only actions elsewhere.
-    """
+class ProviderAccessRequestReviewView(APIView):
+    permission_classes = [IsProviderAdmin]
+    throttle_classes = [PartnerRateThrottle]
+
+    @extend_schema(
+        summary="Approve, reject or revoke a distributor's access",
+        description=(
+            "**The provider decides**, not TheeInsurance. Partner admin only; the request must be addressed to your organization.\n\n"
+            "- `approve`: pending → approved. Provider-level grants cover all your current **and future** public plans; plan-level grants cover one plan.\n"
+            "- `reject`: pending → rejected. `note` is required.\n"
+            "- `revoke`: approved → revoked. The distributor immediately loses the plan(s).\n\n"
+            "A rejected/revoked distributor may request again."
+        ),
+        parameters=[OpenApiParameter("grant_id", OpenApiTypes.UUID, OpenApiParameter.PATH)],
+        request=inline_serializer("ProviderGrantReviewRequest", {"action": s.ChoiceField(["approve", "reject", "revoke"]), "note": s.CharField(required=False)}),
+        responses={200: DistributorAccessGrantSerializer, 400: error("Bad action, missing note or invalid transition.", "Only a pending request can be approved (current status: approved)."),
+                   403: error("Not a full partner_admin.", "Only a partner_admin can review access requests."),
+                   404: error("Not addressed to your organization.", "Access request not found.")},
+        examples=[OpenApiExample("Approve", request_only=True, value={"action": "approve"}),
+                  OpenApiExample("Reject", request_only=True, value={"action": "reject", "note": "We only onboard distributors licensed for motor."}),
+                  OpenApiExample("Approved", response_only=True, status_codes=["200"], value={**GRANT_EXAMPLE, "status": "approved", "reviewed_by_email": "tunde@sunriseassurance.ng", "reviewed_at": "2026-10-06T11:30:00Z"})],
+        tags=[Tag.PROVIDERS, Tag.ACCESS_GRANT],
+    )
+    def patch(self, request, grant_id):
+        if not is_full_partner_admin(request.user):
+            return Response({"error": "Only a partner_admin can review access requests."}, status=403)
+        partner = get_partner_from_user(request.user)
+        grant = DistributorAccessGrant.objects.select_related("distributor", "provider", "plan").filter(id=grant_id, provider=partner).first()
+        if not grant:
+            return Response({"error": "Access request not found."}, status=404)
+        action = request.data.get("action")
+        mgr = DistributorAccessGrant.objects
+        try:
+            if action == "approve":
+                mgr.approve(grant, by=request.user)
+            elif action == "reject":
+                mgr.reject(grant, by=request.user, note=request.data.get("note", ""))
+            elif action == "revoke":
+                mgr.revoke(grant, by=request.user, note=request.data.get("note", ""))
+            else:
+                return Response({"error": "action must be approve, reject or revoke."}, status=400)
+        except ValidationError as e:
+            return Response({"error": " ".join(e.messages)}, status=400)
+        return Response(DistributorAccessGrantSerializer(grant).data)
+
+
+# ================================================================ 3. DISTRIBUTORS: marketplace
+class DistributorMarketplaceProvidersView(APIView):
     permission_classes = [IsDistributorAdmin]
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
-        summary="Distributor Admin: View accessible providers",
-        responses={200: OpenApiResponse(description="List of allowed provider accesses.")},
-        tags=["Insurance Plans: Distributor Access"]
+        summary="Marketplace: providers with public plans",
+        description="Active providers that have at least one active **public** plan. `access` is *your* provider-level grant status "
+                    "(`none | pending | approved | rejected | revoked | withdrawn`). Use it to decide whether to request provider-level access.",
+        responses={200: inline_serializer("MarketplaceProvidersResponse", {"providers": inline_serializer("MarketplaceProvider", {
+            "id": s.UUIDField(), "name": s.CharField(), "slug": s.CharField(), "public_plan_count": s.IntegerField(),
+            "access": inline_serializer("MarketplaceAccess", {"status": s.CharField(), "via": s.CharField(allow_null=True)})}, many=True)})},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value={"providers": [
+            {"id": PROVIDER_ID, "name": "Sunrise Assurance Plc", "slug": "sunrise-assurance-plc", "public_plan_count": 4, "access": {"status": "none", "via": None}}]})],
+        tags=[Tag.DISTRIBUTORS],
     )
     def get(self, request):
-        distributor = request.user.partner_admin_profile.partner
-        status_filter = request.query_params.get("status", "approved")
-
-        valid_statuses = {"pending", "approved", "rejected"}
-        if status_filter not in valid_statuses and status_filter != "all":
-            return Response(
-                {"detail": f"Invalid status filter. Choose from: {', '.join(valid_statuses)}, or 'all'."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        qs = DistributorProviderAccess.objects.filter(
-            distributor=distributor
-        ).select_related("distributor", "provider")
-
-        if status_filter != "all":
-            qs = qs.filter(status=status_filter)
-
-        serializer = DistributorProviderAccessSerializer(qs, many=True)
-        return Response(serializer.data)
+        partner = get_partner_from_user(request.user)
+        idx = distributor_access_index(partner)
+        providers = (Partner.objects.filter(partner_type="provider", is_active=True)
+                     .annotate(public_plan_count=Count("plans", filter=Q(plans__is_active=True, plans__visibility="public")))
+                     .filter(public_plan_count__gt=0).order_by("name"))
+        return Response({"providers": [{
+            "id": str(p.id), "name": p.name, "slug": p.slug, "public_plan_count": p.public_plan_count,
+            "access": {"status": idx["provider"].get(p.id, "none"), "via": "provider" if p.id in idx["provider"] else None},
+        } for p in providers]})
 
 
-@extend_schema_view(
-    get=extend_schema(
-        summary="Browse all providers",
-        description="Fetch all active providers hosted on the platform along with the current distributor's access status to each.",
-        responses={200: ProviderBrowseSerializer(many=True)},
-        tags=["Insurance Plans: Distributor Access"]
-    )
-)
-class DistributorProviderBrowseView(ListAPIView):
-    """
-    GET /partner/providers/browse/
-    All active providers hosted on the platform, with this distributor's
-    access status to each (not_requested / pending / approved / rejected).
-    """
-
-    permission_classes = [IsDistributorAdmin]
-    throttle_classes = [PartnerRateThrottle]
-    serializer_class = ProviderBrowseSerializer
-
-    def get_queryset(self):
-        return Partner.objects.filter(partner_type="provider", is_active=True).order_by("name")
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context["distributor"] = self.request.user.partner_admin_profile.partner
-        return context
-
-
-@extend_schema_view(
-    get=extend_schema(
-        summary="Browse all insurance plans",
-        description="Fetch all active plans across all providers, annotated with access_status. Results can be filtered by category or provider.",
-        parameters=[
-            OpenApiParameter(
-                name="category",
-                type=str,
-                location=OpenApiParameter.QUERY,
-                description="Filter plans by Category UUID",
-                required=False,
-            ),
-            OpenApiParameter(
-                name="provider",
-                type=str,
-                location=OpenApiParameter.QUERY,
-                description="Filter plans by Provider UUID",
-                required=False,
-            ),
-        ],
-        responses={200: DistributorPlanBrowseSerializer(many=True)},
-        tags=["Insurance Plans: Distributor Access"]
-    )
-)
-class DistributorPlanBrowseView(ListAPIView):
-    """
-    GET /partner/providers/plans/
-    All active plans across all providers, annotated with access_status.
-    Optional query params: ?category=<uuid>&provider=<uuid>
-    """
-
-    permission_classes = [IsDistributorAdmin]
-    throttle_classes = [PartnerRateThrottle]
-    serializer_class = DistributorPlanBrowseSerializer
-
-    def get_queryset(self):
-        qs = InsurancePlan.objects.filter(is_active=True).select_related("provider", "category")
-        category = self.request.query_params.get("category")
-        provider = self.request.query_params.get("provider")
-        if category:
-            qs = qs.filter(category_id=category)
-        if provider:
-            qs = qs.filter(provider_id=provider)
-        return qs
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context["distributor"] = self.request.user.partner_admin_profile.partner
-        return context
-
-
-class DistributorAccessRequestView(APIView):
-    """
-    POST /partner/providers/request-access/
-    Body: {"provider": "<provider-uuid>"}
-    Creates a pending DistributorProviderAccess request.
-    """
-
+class DistributorMarketplacePlansView(APIView):
     permission_classes = [IsDistributorAdmin]
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
-        summary="Request access to a provider",
-        description="Creates a new pending access request for the distributor to access a specific provider's data/plans.",
+        summary="Marketplace: browse all public plans",
+        description="Every active public plan from every active provider (private plans never appear). Each plan carries `access`: your effective access "
+                    "(`status` + whether it comes `via` a plan-level or provider-level grant). Only plans with `access.status = approved` appear in your customers' storefront.",
+        parameters=PLAN_FILTERS + [OpenApiParameter("provider_id", OpenApiTypes.UUID, OpenApiParameter.QUERY, description="Only this provider's plans.")],
+        responses={200: MarketplacePlanListResponse, 400: validation_error("provider_id", "Must be a valid UUID.")},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value={"plans": [{**PLAN_EXAMPLE, "access": {"status": "approved", "via": "provider"}}]})],
+        tags=[Tag.DISTRIBUTORS],
+    )
+    def get(self, request):
+        partner = get_partner_from_user(request.user)
+        plans = apply_plan_filters(marketplace_plans().select_related("provider", "category"), request.query_params)
+        ser = MarketplacePlanSerializer(plans, many=True, context={"access_index": distributor_access_index(partner)})
+        return Response({"plans": ser.data})
+
+
+# ================================================================ 3 + 10. DISTRIBUTOR access requests
+class DistributorAccessGrantView(APIView):
+    permission_classes = [IsDistributorAdmin]
+    throttle_classes = [PartnerRateThrottle]
+
+    @extend_schema(
+        summary="My access requests and grants",
+        parameters=[OpenApiParameter("status", OpenApiTypes.STR, OpenApiParameter.QUERY, enum=[c[0] for c in DistributorAccessGrant.STATUS_CHOICES])],
+        responses={200: GrantListResponse},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value={"access_grants": [GRANT_EXAMPLE]})],
+        tags=[Tag.DISTRIBUTORS, Tag.ACCESS_GRANT],
+    )
+    def get(self, request):
+        partner = get_partner_from_user(request.user)
+        grants = (DistributorAccessGrant.objects.filter(distributor=partner)
+                  .select_related("distributor", "provider", "plan", "reviewed_by").order_by("-requested_at"))
+        if f := request.query_params.get("status"):
+            grants = grants.filter(status=f)
+        return Response({"access_grants": DistributorAccessGrantSerializer(grants, many=True).data})
+
+    @extend_schema(
+        summary="Request access to a provider or a single plan",
+        description=(
+            "Partner admin only. The **provider** reviews the request.\n\n"
+            "- `scope=provider`: access to **all** the provider's public plans, including ones created later. Omit `plan_id`.\n"
+            "- `scope=plan`: access to that **one** public plan only. `plan_id` is required.\n\n"
+            "Only active public plans of active providers can be requested. Re-requesting after a rejection/revocation/withdrawal "
+            "reopens the same request as `pending`; requesting something already pending/approved returns it unchanged."
+        ),
         request=DistributorAccessRequestSerializer,
-        responses={
-            201: inline_serializer(
-                name="DistributorAccessRequestResponse",
-                fields={
-                    "provider": serializers.CharField(help_text="Name of the provider"),
-                    "status": serializers.CharField(help_text="Current status of the request (e.g., pending)"),
-                    "granted_at": serializers.DateTimeField(
-                        help_text="Timestamp when access was granted, if applicable", allow_null=True
-                    ),
-                },
-            )
-        },
-        tags=["Insurance Plans: Distributor Access"]
+        responses={201: DistributorAccessGrantSerializer, 400: validation_error("plan_id", "plan_id is required when scope='plan'."),
+                   403: error("Not a full partner_admin.", "Only a partner_admin can request provider access."),
+                   404: error("Provider or plan not found.", "Plan not found for this provider.")},
+        examples=[OpenApiExample("Provider-level", request_only=True, value={"provider_id": PROVIDER_ID, "scope": "provider"}),
+                  OpenApiExample("Plan-level", request_only=True, value={"provider_id": PROVIDER_ID, "scope": "plan", "plan_id": PLAN_ID}),
+                  OpenApiExample("Created", response_only=True, status_codes=["201"], value=GRANT_EXAMPLE)],
+        tags=[Tag.DISTRIBUTORS, Tag.ACCESS_GRANT],
     )
     def post(self, request):
-        serializer = DistributorAccessRequestSerializer(
-            data=request.data,
-            context={"distributor": request.user.partner_admin_profile.partner},
-        )
+        if not is_full_partner_admin(request.user):
+            return Response({"error": "Only a partner_admin can request provider access."}, status=403)
+        partner = get_partner_from_user(request.user)
+        serializer = DistributorAccessRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        access = serializer.save()
-        return Response(
-            {
-                "provider": access.provider.name,
-                "status": access.status,
-                "granted_at": access.granted_at,
-            },
-            status=status.HTTP_201_CREATED,
-        )
+        data = serializer.validated_data
+        provider = Partner.objects.filter(id=data["provider_id"], partner_type="provider", is_active=True).first()
+        if not provider:
+            return Response({"error": "Provider not found."}, status=404)
+        plan = None
+        if data["scope"] == "plan":
+            plan = InsurancePlan.objects.filter(id=data["plan_id"], provider=provider).first()
+            if not plan:
+                return Response({"error": "Plan not found for this provider."}, status=404)
+        try:
+            grant = DistributorAccessGrant.objects.request_access(distributor=partner, provider=provider, scope=data["scope"], plan=plan)
+        except ValidationError as e:
+            return Response({"error": " ".join(e.messages)}, status=400)
+        return Response(DistributorAccessGrantSerializer(grant).data, status=201)
 
 
-# AI / Automation — Internal Service Endpoints
+class DistributorAccessGrantWithdrawView(APIView):
+    permission_classes = [IsDistributorAdmin]
+    throttle_classes = [PartnerRateThrottle]
+
+    @extend_schema(
+        summary="Withdraw a pending request",
+        description="Only `pending` requests. To drop an **approved** grant, ask the provider to revoke it.",
+        parameters=[OpenApiParameter("grant_id", OpenApiTypes.UUID, OpenApiParameter.PATH)], request=None,
+        responses={200: MessageSerializer, 400: error("Not pending.", "Only a pending request can be withdrawn (current status: approved)."),
+                   403: error("Not a full partner_admin.", "Only a partner_admin can withdraw a request."), 404: error("Not yours / not found.", "Access request not found.")},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value={"message": "Access request withdrawn."})],
+        tags=[Tag.DISTRIBUTORS, Tag.ACCESS_GRANT],
+    )
+    def post(self, request, grant_id):
+        if not is_full_partner_admin(request.user):
+            return Response({"error": "Only a partner_admin can withdraw a request."}, status=403)
+        grant = DistributorAccessGrant.objects.filter(id=grant_id, distributor=get_partner_from_user(request.user)).first()
+        if not grant:
+            return Response({"error": "Access request not found."}, status=404)
+        try:
+            DistributorAccessGrant.objects.withdraw(grant)
+        except ValidationError as e:
+            return Response({"error": " ".join(e.messages)}, status=400)
+        return Response({"message": "Access request withdrawn."})
+
+
+# ================================================================ 6. PLANS: AI / automation (service accounts)
 class PlanRecommendationView(APIView):
     permission_classes = [IsServiceAccount]
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
-        summary="AI Engine: Get plan recommendations",
-        parameters=[
-            OpenApiParameter(name="category", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Filter recommendations by category"),
-            OpenApiParameter(name="budget", type=OpenApiTypes.DECIMAL, location=OpenApiParameter.QUERY, description="Maximum premium budget allowed"),
-            OpenApiParameter(name="coverage_level", type=OpenApiTypes.STR, location=OpenApiParameter.QUERY, description="Target coverage level"),
-        ],
-        responses={200: OpenApiResponse(description="Ranked and filtered recommended plans with context information.")},
-        tags=["Insurance Plans: AI Recommendations"]
+        summary="AI engine: recommended plans",
+        description="Service-account only. Uses the storefront of the partner in `X-Partner-Key`, ordered by premium (cheapest first).",
+        auth=[{"BearerAuth": [], "PartnerKey": []}],
+        parameters=[OpenApiParameter("category", OpenApiTypes.STR, OpenApiParameter.QUERY),
+                    OpenApiParameter("budget", OpenApiTypes.DECIMAL, OpenApiParameter.QUERY, description="Max premium (NGN)."),
+                    OpenApiParameter("coverage_level", OpenApiTypes.STR, OpenApiParameter.QUERY)],
+        responses={200: inline_serializer("RecommendationResponse", {"recommended_plans": InsurancePlanSerializer(many=True), "filters_applied": s.DictField()}),
+                   400: validation_error("budget", "Must be a number.")},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value={
+            "recommended_plans": [PLAN_EXAMPLE], "filters_applied": {"category": "motor", "budget": "100000", "coverage_level": None}})],
+        tags=[Tag.PLANS],
     )
     def get(self, request):
-        partner = request.partner
-        category = request.query_params.get('category')
-        budget = request.query_params.get('budget')
-        coverage_level = request.query_params.get('coverage_level')
-
-        if partner.partner_type == "provider":
-            plans = InsurancePlan.objects.filter(provider=partner, is_active=True)
-        else:
-            provider_ids, plan_ids = _accessible_plan_ids_and_providers(partner)
-            plans = InsurancePlan.objects.filter(is_active=True).exclude(
-                visibility="private"
-            ).filter(
-                Q(provider_id__in=provider_ids) | Q(id__in=plan_ids)
-            )
-
-        if category:
-            plans = plans.filter(category__name=category)
-        if coverage_level:
-            plans = plans.filter(coverage_level=coverage_level)
-        if budget:
+        p = request.query_params
+        plans = plans_visible_to_partner(request.partner).select_related("provider", "category")
+        if p.get("category"):
+            plans = plans.filter(category__name=p["category"])
+        if p.get("coverage_level"):
+            plans = plans.filter(coverage_level=p["coverage_level"])
+        if (budget := _decimal(p, "budget")) is not None:
             plans = plans.filter(premium__lte=budget)
-
-        plans = plans.order_by("premium")
-
-        serializer = InsurancePlanSerializer(plans, many=True)
-        return Response({
-            "recommended_plans": serializer.data,
-            "filters_applied": {
-                "category": category,
-                "budget": budget,
-                "coverage_level": coverage_level,
-            }
-        })
+        return Response({"recommended_plans": InsurancePlanSerializer(plans.order_by("premium"), many=True).data,
+                         "filters_applied": {"category": p.get("category"), "budget": p.get("budget"), "coverage_level": p.get("coverage_level")}})
 
 
 class PlanContextView(APIView):
@@ -541,39 +520,17 @@ class PlanContextView(APIView):
     throttle_classes = [PartnerRateThrottle]
 
     @extend_schema(
-        summary="AI Engine: Fetch structured system prompt context",
-        responses={200: OpenApiResponse(description="Flattened, highly compressed plan parameters tailored for LLM consumption.")},
-        tags=["Insurance Plans: AI Recommendations"]
+        summary="AI engine: compact plan context for prompts",
+        auth=[{"BearerAuth": [], "PartnerKey": []}],
+        responses={200: inline_serializer("PlanContextResponse", {"partner": s.CharField(), "total_plans": s.IntegerField(), "plans": s.ListField(child=s.DictField())})},
+        examples=[OpenApiExample("OK", response_only=True, status_codes=["200"], value={"partner": "QuickCover Ltd", "total_plans": 1, "plans": [{
+            "id": PLAN_ID, "name": "Motor Comprehensive Plus", "provider": "Sunrise Assurance Plc", "category": "Motor", "coverage_level": "Comprehensive",
+            "coverage_amount": "5000000.00", "premium": "85000.00", "duration_months": 12, "description": "Full cover incl. theft, fire, third party and flood damage."}]})],
+        tags=[Tag.PLANS],
     )
     def get(self, request):
-        partner = request.partner
-
-        if partner.partner_type == "provider":
-            plans = InsurancePlan.objects.filter(provider=partner, is_active=True)
-        else:
-            provider_ids, plan_ids = _accessible_plan_ids_and_providers(partner)
-            plans = InsurancePlan.objects.filter(is_active=True).exclude(
-                visibility="private"
-            ).filter(
-                Q(provider_id__in=provider_ids) | Q(id__in=plan_ids)
-            )
-
-        context = []
-        for plan in plans.select_related("provider", "category"):
-            context.append({
-                "id": str(plan.id),
-                "name": plan.name,
-                "provider": plan.provider.name,
-                "category": plan.category.get_name_display(),
-                "coverage_level": plan.get_coverage_level_display(),
-                "coverage_amount": str(plan.coverage_amount),
-                "premium": str(plan.premium),
-                "duration_months": plan.duration_months,
-                "description": plan.description,
-            })
-
-        return Response({
-            "partner": partner.name,
-            "total_plans": len(context),
-            "plans": context,
-        })
+        plans = plans_visible_to_partner(request.partner).select_related("provider", "category")
+        context = [{"id": str(p.id), "name": p.name, "provider": p.provider.name, "category": p.category.get_name_display(),
+                    "coverage_level": p.get_coverage_level_display(), "coverage_amount": str(p.coverage_amount),
+                    "premium": str(p.premium), "duration_months": p.duration_months, "description": p.description} for p in plans]
+        return Response({"partner": request.partner.name, "total_plans": len(context), "plans": context})

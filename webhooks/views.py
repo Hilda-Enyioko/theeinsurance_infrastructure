@@ -92,7 +92,7 @@ class WebhookListCreateView(APIView):
             "message": "Webhook registered successfully.",
             "id": str(webhook.id),
             "url": webhook.url,
-            "secret": webhook.secret,    # shown once at creation only
+            "secret": webhook._raw_webhook_secret,
             "events": events,
         }, status=201)
 
@@ -255,6 +255,8 @@ class ServiceWebhookRegisterView(APIView):
                 )
             if not url:
                 return Response({"error": f"Missing url for event '{event}'."}, status=400)
+            if not str(url).startswith("https://"):
+                return Response({"error": f"url for '{event}' must be https."}, status=400)
 
             obj, _ = ServiceWebhookEndpoint.objects.update_or_create(
                 service_account=request.user,

@@ -47,9 +47,8 @@ class Transaction(models.Model):
         NEW_SUBSCRIPTION = 'NEW_SUBSCRIPTION', _('New Subscription')
         RENEWAL = 'RENEWAL', _('Renewal')
     
-    class GATEWAY(models.TextChoices):
-        INTERSWITCH = 'INTERSWITCH', _('Interswitch')
-        NOMBA       = 'NOMBA',       _('Nomba')
+    class GATEWAY(models.TextChoices):       
+        PAYSTACK = 'PAYSTACK', _('Paystack')
 
     id: models.UUIDField = models.UUIDField(
         primary_key=True, 
@@ -115,6 +114,9 @@ class Transaction(models.Model):
         null=True,
         blank=True,
     )
+    
+    authorization_url = models.URLField(max_length=500, blank=True, default="")   # NEW
+    access_code = models.CharField(max_length=100, blank=True, default="")  
 
     created_at: models.DateTimeField = models.DateTimeField(
         auto_now_add=True, db_index=True
@@ -147,8 +149,7 @@ class CallbackLog(models.Model):
         FLAGGED = 'FLAGGED', _('Flagged')
 
     class Gateway(models.TextChoices):
-        INTERSWITCH = 'INTERSWITCH', _('Interswitch')
-        NOMBA       = 'NOMBA',       _('Nomba')
+        PAYSTACK = 'PAYSTACK', _('Paystack')
 
     uuid: models.UUIDField = models.UUIDField(
         primary_key=True,

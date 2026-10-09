@@ -1,4 +1,5 @@
 # Nomba Dunning & Subscription Retry Workflow
+<!-- Stale Documentation -->
 
 An automated dunning system built for the Nomba Hackathon. It detects failed subscription charges and manages the retry lifecycle end-to-end — from the first failed payment through final cancellation — using **n8n** as the orchestration layer and a **Django** backend for state management and webhooks.
 

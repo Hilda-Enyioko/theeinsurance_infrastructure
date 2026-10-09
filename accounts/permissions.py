@@ -1,11 +1,14 @@
 from rest_framework.permissions import BasePermission
+from rest_framework.exceptions import PermissionDenied
+from .models import CustomerKYC
+
 
 class IsStaffMember(BasePermission):
     """
     Super Admin or Support Admin 
     any platform staff role
     """
-    def has_permission(self, request):
+    def has_permission(self, request, view):
         return bool(
             request.user
             and request.user.is_authenticated
@@ -16,7 +19,7 @@ class IsSuperAdmin(BasePermission):
     """
     TheeInsurance staff only.
     """
-    def has_permission(self, request):
+    def has_permission(self, request, view):
         return (
             request.user
             and request.user.is_authenticated
@@ -56,6 +59,25 @@ class IsCustomer(BasePermission):
             and request.user.is_authenticated
             and request.user.role == "customer"
         )
+
+
+class IsKYCVerifiedCustomer(IsCustomer):
+    """Customers may browse plans without KYC, but can only purchase with APPROVED KYC."""
+
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        kyc = CustomerKYC.objects.filter(
+            customer__user=request.user, customer__partner=getattr(request, "partner", None)
+        ).first()
+        status_ = kyc.status if kyc else "not_submitted"
+        if status_ != "approved":
+            raise PermissionDenied({
+                "error": "Complete KYC verification before purchasing a plan.",
+                "code": "kyc_required",
+                "kyc_status": status_,
+            })
+        return True
 
 
 class IsProviderAdmin(BasePermission):
@@ -112,10 +134,32 @@ class IsServiceAccount(BasePermission):
     Requires authentication — n8n must call with a valid JWT
     belonging to a dedicated service account user (role='service').
     """
-class IsServiceAccount(BasePermission):
     def has_permission(self, request, view):
         return bool(
             request.user
             and request.user.is_authenticated
             and getattr(request.user, "role", None) == "service_account"
         )
+
+
+class IsHumanStaff(BasePermission):
+    """super_admin or support_admin, never a service account."""
+    def has_permission(self, request, view):
+        u = request.user
+        return bool(u and u.is_authenticated and u.role in ("super_admin", "support_admin"))
+
+
+class IsCustomerOfPartner(BasePermission):
+    """For storefront endpoints: caller must be logged in AND belong to the partner whose X-Partner-Key is sent."""
+    message = "You are not registered with this partner."
+
+    def has_permission(self, request, view):
+        user, partner = request.user, getattr(request, "partner", None)
+        if not (user and user.is_authenticated and partner):
+            return False
+        if user.role == "customer":
+            return user.customer_profiles.filter(partner=partner).exists()
+        if user.role == "partner_admin":      # partners may preview their own storefront
+            profile = getattr(user, "partner_admin_profile", None)
+            return bool(profile and profile.partner_id == partner.id)
+        return False

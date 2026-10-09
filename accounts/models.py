@@ -12,12 +12,14 @@ from core.storage import KYCDocumentStorage
 # Custom User ------------------------------------------------------------------------
 
 class CustomUserManager(BaseUserManager):
-    """Manager for custom user model provisioning."""
-
     def create_user(self, email, password=None, **extra_fields):
         if not email:
             raise ValueError("Email is required.")
         email = self.normalize_email(email)
+        extra_fields.setdefault("role", "customer")
+        extra_fields.setdefault("is_staff", False)
+        extra_fields.setdefault("is_superuser", False)
+        extra_fields.setdefault("is_active", True)
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
@@ -27,7 +29,13 @@ class CustomUserManager(BaseUserManager):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("role", "super_admin")
-        return self.create_user(email, password, **extra_fields)
+        if not email:
+            raise ValueError("Email is required.")
+        email = self.normalize_email(email)
+        staff_user = Staff(email=email, created_by=None, **extra_fields)
+        staff_user.set_password(password)
+        staff_user.save(using=self._db)
+        return staff_user
 
 
 class CustomUser(AbstractBaseUser, PermissionsMixin):
@@ -246,6 +254,12 @@ class CustomerProfile(models.Model):
 
     class Meta:
         unique_together = ["user", "partner"]
+    
+    @property
+    def has_settlement(self) -> bool:
+        return bool(self.settlement_account_name
+                    and self.settlement_bank_account
+                    and self.settlement_bank_code)
 
     def __str__(self):
         return f"{self.user.email} — {self.partner.name}"

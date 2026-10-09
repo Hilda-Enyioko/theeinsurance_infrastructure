@@ -1,8 +1,10 @@
 """
 Serializers for authentication, user profiles, onboarding, and KYC workflows.
 """
-
 from django.contrib.auth.password_validation import validate_password
+from django.db import transaction
+from django.utils.text import slugify
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from core.models import DistributorProfile, Partner, ProviderProfile
@@ -99,114 +101,122 @@ class CustomerRegistrationSerializer(serializers.ModelSerializer):
         return user
 
 
+def _unique_slug(name):
+    base = slugify(name)[:40] or "partner"
+    slug, i = base, 2
+    while Partner.objects.filter(slug=slug).exists():
+        slug, i = f"{base}-{i}", i + 1
+    return slug
+
 class PartnerOnboardingSerializer(serializers.Serializer):
-    """
-    Validates payload structure and sets up an entirely new Partner enterprise 
-    alongside its founding Administrator account.
-    """
-
-    # Partner details
-    partner_name = serializers.CharField(max_length=255)
-    partner_slug = serializers.CharField(max_length=100)
+    name = serializers.CharField(max_length=255)
     partner_type = serializers.ChoiceField(choices=Partner.PARTNER_TYPE_CHOICES)
-    commission_rate = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, default=0.00)
-    nomba_account_id = serializers.CharField(
-        max_length=100, required=False, allow_blank=True, allow_null=True, default=None,
-        help_text="Optional. Leave blank if this partner will use Interswitch instead of Nomba."
+    commission_rate = serializers.DecimalField(
+        max_digits=5, decimal_places=2, min_value=0, max_value=100, required=False,
+        help_text="Percentage (0-100). REQUIRED for distributors, NOT ALLOWED for providers.",
     )
-
-    # Provider-specific properties
-    naicom_licence_number = serializers.CharField(
-        max_length=50, required=False, allow_blank=True, default=""
-    )
-    settlement_bank_account = serializers.CharField(
-        max_length=64, required=False, allow_blank=True, default=""
-    )
-    settlement_bank_code = serializers.CharField(
-        max_length=10, required=False, allow_blank=True, default=""
-    )
-
-    # Primary administrative user fields
-    email = serializers.EmailField()
     first_name = serializers.CharField(max_length=100)
     last_name = serializers.CharField(max_length=100)
-    password = serializers.CharField(
-        write_only=True, required=True, validators=[validate_password]
-    )
-    confirm_password = serializers.CharField(write_only=True, required=True)
-
-    def validate_partner_slug(self, value):
-        """Ensures the organization slug is unique."""
-        if Partner.objects.filter(slug=value).exists():
-            raise serializers.ValidationError(
-                "A partner with this slug already exists."
-            )
-        return value
+    email = serializers.EmailField()
+    phone_number = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    address = serializers.CharField(required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True, min_length=8, style={"input_type": "password"})
 
     def validate_email(self, value):
-        """Ensures the registration email has not been taken globally."""
-        if CustomUser.objects.filter(email=value).exists():
-            raise serializers.ValidationError(
-                "A user with this email already exists."
-            )
+        value = value.lower()
+        if CustomUser.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("An account with this email already exists.")
+        return value
+
+    def validate_password(self, value):
+        validate_password(value)
         return value
 
     def validate(self, attrs):
-        """Validates that password confirmation parameters are congruent."""
-        if attrs["password"] != attrs["confirm_password"]:
-            raise serializers.ValidationError(
-                {"password": "Passwords do not match."}
-            )
+        ptype, rate = attrs["partner_type"], attrs.get("commission_rate")
+        if ptype == "distributor" and rate is None:
+            raise serializers.ValidationError({"commission_rate": "Required for distributors."})
+        if ptype == "provider" and rate is not None:
+            raise serializers.ValidationError({"commission_rate": "Not applicable to providers."})
         return attrs
 
-    def create(self, validated_data):
-        """
-        Coordinates creation steps across Partner, internal profile types, 
-        and administrative User profiles.
-        """
-        partner_type = validated_data.pop("partner_type")
-        commission_rate = validated_data.pop("commission_rate", 0.00)
-        nomba_account_id = validated_data.pop("nomba_account_id", None)
-        validated_data.pop("confirm_password")
-
+    @transaction.atomic
+    def create(self, vd):
         partner = Partner.objects.create(
-            name=validated_data.pop("partner_name"),
-            slug=validated_data.pop("partner_slug"),
-            partner_type=partner_type,
-            nomba_account_id=nomba_account_id,
-            is_active=False, # inactive until KYC is approved
-        )
-
-        if partner_type == "distributor":
-            DistributorProfile.objects.create(
-                partner=partner,
-                commission_rate=commission_rate,
-                settlement_bank_account=settlement_bank_account,
-                settlement_bank_code=settlement_bank_code,
-            )
+            name=vd["name"], slug=_unique_slug(vd["name"]), partner_type=vd["partner_type"],
+            phone_number=vd.get("phone_number", ""), address=vd.get("address", ""),
+            is_active=False,
+        )  # Partner.save() sets partner._raw_api_key
+        if partner.partner_type == "distributor":
+            DistributorProfile.objects.create(partner=partner, commission_rate=vd["commission_rate"])
         else:
-            ProviderProfile.objects.create(
-                partner=partner,
-                naicom_licence_number=naicom_licence_number,
-                settlement_bank_account=settlement_bank_account,
-                settlement_bank_code=settlement_bank_code,
-            )
+            ProviderProfile.objects.create(partner=partner)
 
         user = CustomUser.objects.create_user(
-            email=validated_data["email"],
-            password=validated_data["password"],
-            first_name=validated_data["first_name"],
-            last_name=validated_data["last_name"],
-            role="partner_admin",
+            email=vd["email"], password=vd["password"], first_name=vd["first_name"],
+            last_name=vd["last_name"], role="partner_admin",
         )
-
-        PartnerAdmin.objects.create(
-            user=user,
-            partner=partner,
-            role="partner_admin",
-        )
-
+        PartnerAdmin.objects.create(user=user, partner=partner, role="partner_admin")
+        self.admin_user = user
         return partner
+
+
+# ---- Partner profile (post-KYC) ---------------------------------------------------
+class SettlementSerializer(serializers.Serializer):
+    account_name = serializers.CharField(source="settlement_account_name", max_length=255)
+    account_number = serializers.RegexField(r"^\d{10}$", source="settlement_bank_account",
+                                            error_messages={"invalid": "Must be a 10-digit NUBAN account number."})
+    bank_code = serializers.RegexField(r"^\d{3,6}$", source="settlement_bank_code",
+                                       error_messages={"invalid": "Must be 3-6 digits."})
+
+
+def settlement_profile(partner):
+    return partner.distributor_profile if partner.partner_type == "distributor" else partner.provider_profile
+
+
+class PartnerProfileUpdateSerializer(serializers.Serializer):
+    phone_number = serializers.CharField(max_length=20, required=False)
+    address = serializers.CharField(required=False)
+    website = serializers.URLField(required=False, allow_blank=True)
+    settlement = SettlementSerializer(required=False)
+
+    @transaction.atomic
+    def update(self, partner, vd):
+        settlement = vd.pop("settlement", None)
+        if vd:
+            for k, v in vd.items():
+                setattr(partner, k, v)
+            partner.save(update_fields=list(vd))
+        if settlement:
+            profile = settlement_profile(partner)
+            for k, v in settlement.items():
+                setattr(profile, k, v)
+            profile.save()
+        return partner
+
+
+class PartnerProfileSerializer(serializers.ModelSerializer):
+    commission_rate = serializers.DecimalField(
+        source="distributor_profile.commission_rate", max_digits=5, decimal_places=2,
+        read_only=True, help_text="Distributors only. Set by TheeInsurance staff.")
+    naicom_licence_number = serializers.CharField(
+        source="provider_profile.naicom_licence_number", read_only=True, help_text="Providers only.")
+    settlement = serializers.SerializerMethodField()
+    kyc_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Partner
+        fields = ["id", "name", "slug", "partner_type", "is_active", "phone_number", "address",
+                  "website", "commission_rate", "naicom_licence_number", "settlement", "kyc_status"]
+        read_only_fields = fields
+
+    @extend_schema_field(SettlementSerializer)
+    def get_settlement(self, obj):
+        return SettlementSerializer(settlement_profile(obj)).data
+
+    @extend_schema_field(serializers.CharField())
+    def get_kyc_status(self, obj):
+        return obj.kyc.status if hasattr(obj, "kyc") else "not_submitted"
 
 
 class PartnerTeamInviteSerializer(serializers.Serializer):
@@ -393,3 +403,44 @@ class PartnerPasswordConfirmSerializer(serializers.Serializer):
         if not user.check_password(value):
             raise serializers.ValidationError("Incorrect password.")
         return value
+
+
+class CustomerProfileSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(source="user.email", read_only=True)
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
+    settlement = serializers.SerializerMethodField()
+    settlement_complete = serializers.BooleanField(
+        source="has_settlement", read_only=True,
+        help_text="True when account name, number and bank code are all on file. Required before a claim can be approved.")
+
+    class Meta:
+        model = CustomerProfile
+        fields = ["id", "email", "first_name", "last_name", "phone_number", "date_of_birth",
+                  "gender", "address", "settlement", "settlement_complete"]
+        read_only_fields = fields
+
+    @extend_schema_field(SettlementSerializer)
+    def get_settlement(self, obj):
+        return SettlementSerializer(obj).data
+
+
+class CustomerProfileUpdateSerializer(serializers.Serializer):
+    phone_number = serializers.CharField(max_length=20, required=False)
+    address = serializers.CharField(required=False)
+    settlement = SettlementSerializer(required=False)
+
+    def validate_settlement(self, value):
+        needed = {"settlement_account_name", "settlement_bank_account", "settlement_bank_code"}
+        if needed - value.keys():
+            raise serializers.ValidationError(
+                "account_name, account_number and bank_code must be provided together.")
+        return value
+
+    @transaction.atomic
+    def update(self, profile, vd):
+        settlement = vd.pop("settlement", None) or {}
+        for k, v in {**vd, **settlement}.items():
+            setattr(profile, k, v)
+        profile.save()
+        return profile
