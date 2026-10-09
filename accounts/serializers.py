@@ -274,6 +274,7 @@ class PartnerTeamMemberSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
+    @extend_schema_field(serializers.EmailField(allow_null=True))
     def get_invited_by_email(self, obj):
         """Retrieves email metadata string associated with the parent inviter entity."""
         return obj.invited_by.email if obj.invited_by_id else None
@@ -328,6 +329,7 @@ class StaffSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+    @extend_schema_field(serializers.EmailField(allow_null=True))
     def get_created_by_email(self, obj):
         """Extracts text information regarding creation ownership boundaries."""
         return obj.created_by.email if obj.created_by_id else None
