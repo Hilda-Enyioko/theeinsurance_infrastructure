@@ -7,6 +7,7 @@ from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, Permis
 from django.utils import timezone
 from core.models import Partner
 from core.storage import KYCDocumentStorage
+from core.models import Partner, SettlementDetails
 
 
 # Custom User ------------------------------------------------------------------------
@@ -230,7 +231,7 @@ class PartnerAdmin(models.Model):
 
 # Customer Profile ----------------------------------------------------------------------
 
-class CustomerProfile(models.Model):
+class CustomerProfile(SettlementDetails):
     """Siloed demographic metadata block matching a user to a transactional partner."""
 
     GENDER_CHOICES = [
@@ -255,15 +256,8 @@ class CustomerProfile(models.Model):
     class Meta:
         unique_together = ["user", "partner"]
     
-    @property
-    def has_settlement(self) -> bool:
-        return bool(self.settlement_account_name
-                    and self.settlement_bank_account
-                    and self.settlement_bank_code)
-
     def __str__(self):
         return f"{self.user.email} — {self.partner.name}"
-
 
 # KYC -----------------------------------------------------------------------------------
 

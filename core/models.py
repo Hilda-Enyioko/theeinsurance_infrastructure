@@ -25,6 +25,14 @@ class SettlementDetails(models.Model):
 
     class Meta:
         abstract = True
+    
+    @property
+    def has_settlement(self) -> bool:
+        return bool(
+            self.settlement_account_name
+            and self.settlement_bank_account
+            and self.settlement_bank_code
+        )
 
 
 class Partner(models.Model):
@@ -65,7 +73,9 @@ class Partner(models.Model):
         super().save(*args, **kwargs)
 
 
-class DistributorProfile(models.Model):
+# core/models.py
+
+class DistributorProfile(SettlementDetails):
     """Isolated pricing, structural parameters, and banking rules for distributors."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -79,7 +89,6 @@ class DistributorProfile(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def clean(self):
-        """Ensures integrity rules cannot be bypassed at the programmatic level."""
         super().clean()
         if self.partner and self.partner.partner_type != "distributor":
             raise ValidationError(
@@ -94,7 +103,7 @@ class DistributorProfile(models.Model):
         return f"{self.partner.name} — {self.commission_rate}%"
 
 
-class ProviderProfile(models.Model):
+class ProviderProfile(SettlementDetails):
     """Regulatory registry identity configurations for risk-carrying carriers."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -108,7 +117,6 @@ class ProviderProfile(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def clean(self):
-        """Enforces type constraints at execution layer."""
         super().clean()
         if self.partner and self.partner.partner_type != "provider":
             raise ValidationError(
@@ -121,7 +129,6 @@ class ProviderProfile(models.Model):
 
     def __str__(self):
         return f"{self.partner.name} (Provider)"
-
 
 class Webhook(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
