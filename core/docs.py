@@ -14,6 +14,7 @@ class Tag:
     CLAIMS = "8. Claims"
     WEBHOOKS = "9. Webhooks"
     ACCESS_GRANT = "10. Access Grant"
+    SERVICE = "11. Service (n8n)"
 
 
 ErrorSerializer = inline_serializer("Error", {"error": s.CharField()})
@@ -26,6 +27,9 @@ TokenPairSerializer = inline_serializer(
 SAMPLE_REFRESH = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIs..."
 SAMPLE_ACCESS = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiw..."
 SAMPLE_TOKENS = {"refresh": SAMPLE_REFRESH, "access": SAMPLE_ACCESS}
+
+PARTNER_KEY_AUTH = [{"BearerAuth": [], "PartnerKey": []}]
+SERVICE_AUTH = [{"BearerAuth": []}]
 
 
 def error(description, example, key="error"):

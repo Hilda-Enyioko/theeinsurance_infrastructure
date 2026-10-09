@@ -254,6 +254,12 @@ class CustomerProfile(models.Model):
 
     class Meta:
         unique_together = ["user", "partner"]
+    
+    @property
+    def has_settlement(self) -> bool:
+        return bool(self.settlement_account_name
+                    and self.settlement_bank_account
+                    and self.settlement_bank_code)
 
     def __str__(self):
         return f"{self.user.email} — {self.partner.name}"

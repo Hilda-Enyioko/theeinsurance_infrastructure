@@ -84,6 +84,9 @@ class Claim(models.Model):
     
     submitted_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    forwarded_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="First time the claim cleared the AI/staff gate. Providers only see claims where this is set.")
     
     def save(self, *args, **kwargs):
         if not self.claim_reference:
@@ -175,6 +178,9 @@ class ClaimPayment(models.Model):
     reference = models.CharField(max_length=64, unique=True)   # our merchant tx reference
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=PENDING)
+    account_name = models.CharField(max_length=255, blank=True)
+    account_number = models.CharField(max_length=64, blank=True)
+    bank_code = models.CharField(max_length=10, blank=True)
     gateway_reference = models.CharField(max_length=100, blank=True)
     failure_reason = models.CharField(max_length=255, blank=True)
     receipt_url = models.URLField(max_length=500, blank=True)

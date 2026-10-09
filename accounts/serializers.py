@@ -403,3 +403,44 @@ class PartnerPasswordConfirmSerializer(serializers.Serializer):
         if not user.check_password(value):
             raise serializers.ValidationError("Incorrect password.")
         return value
+
+
+class CustomerProfileSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(source="user.email", read_only=True)
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
+    settlement = serializers.SerializerMethodField()
+    settlement_complete = serializers.BooleanField(
+        source="has_settlement", read_only=True,
+        help_text="True when account name, number and bank code are all on file. Required before a claim can be approved.")
+
+    class Meta:
+        model = CustomerProfile
+        fields = ["id", "email", "first_name", "last_name", "phone_number", "date_of_birth",
+                  "gender", "address", "settlement", "settlement_complete"]
+        read_only_fields = fields
+
+    @extend_schema_field(SettlementSerializer)
+    def get_settlement(self, obj):
+        return SettlementSerializer(obj).data
+
+
+class CustomerProfileUpdateSerializer(serializers.Serializer):
+    phone_number = serializers.CharField(max_length=20, required=False)
+    address = serializers.CharField(required=False)
+    settlement = SettlementSerializer(required=False)
+
+    def validate_settlement(self, value):
+        needed = {"settlement_account_name", "settlement_bank_account", "settlement_bank_code"}
+        if needed - value.keys():
+            raise serializers.ValidationError(
+                "account_name, account_number and bank_code must be provided together.")
+        return value
+
+    @transaction.atomic
+    def update(self, profile, vd):
+        settlement = vd.pop("settlement", None) or {}
+        for k, v in {**vd, **settlement}.items():
+            setattr(profile, k, v)
+        profile.save()
+        return profile
