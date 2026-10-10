@@ -1,6 +1,9 @@
 from django.urls import path
 from .service_views import (
-    ServiceClaimAiResultView, ServiceClaimReceiptView, ServiceClaimNotifiedView,
+    ServiceClaimAiResultView,
+    ServiceClaimReceiptView,
+    ServiceClaimNotifiedView,
+    ServiceClaimDetailView,
 )
 
 urlpatterns = [
