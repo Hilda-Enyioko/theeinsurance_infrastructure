@@ -10,6 +10,7 @@ from webhooks import builders as b
 from webhooks.events import E
 from webhooks.services import emit
 from .models import Claim, ClaimPayment
+from .serializers import ClaimSerializer
 
 
 class AiResultSerializer(serializers.Serializer):
@@ -128,3 +129,24 @@ class ServiceClaimNotifiedView(APIView):
             emit(E.CLAIM_PARTIES_NOTIFIED, partner=claim.provider, aggregate_id=claim.id,
                  data=b.claim_parties_notified(claim))
         return Response({"status": claim.status})
+
+
+class ServiceClaimDetailView(APIView):
+    permission_classes = [IsServiceAccount]
+
+    @extend_schema(
+        responses={
+            200: ClaimSerializer,
+            404: inline_serializer("ServiceClaimNotFound", {"error": serializers.CharField()}),
+        },
+        tags=["Service: Claims"],
+        summary="Get a claim (n8n)",
+    )
+    def get(self, request, claim_id):
+        claim = (Claim.objects
+                 .select_related("customer__user", "provider", "subscription__plan")
+                 .prefetch_related("documents", "payments")
+                 .filter(id=claim_id).first())
+        if claim is None:
+            return Response({"error": "Claim not found."}, status=404)
+        return Response(ClaimSerializer(claim).data)
